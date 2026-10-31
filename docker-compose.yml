@@ -1,0 +1,25 @@
+# Запуск на сервере: приложение + Caddy (HTTPS). Настройки берутся из .env
+services:
+  app:
+    build: .
+    env_file: .env
+    volumes:
+      - sokrat-data:/data
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2.8
+    env_file: .env
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+    depends_on:
+      - app
+    restart: unless-stopped
+
+volumes:
+  sokrat-data:
+  caddy-data:
