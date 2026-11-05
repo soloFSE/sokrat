@@ -11,6 +11,7 @@ import hashlib
 import hmac
 import json
 import os
+import time
 from pathlib import Path
 from urllib.parse import parse_qsl
 
@@ -29,6 +30,7 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 STATIC = Path(__file__).parent / "static"
 MAX_PHOTO = 8 * 1024 * 1024        # фото больше 8 МБ не принимаем
+INIT_DATA_MAX_AGE = 24 * 3600      # сколько действуют данные запуска мини-приложения
 
 app = FastAPI(title="СОКРАТ — веб-версия")
 
@@ -62,6 +64,16 @@ def user_from_init_data(init_data: str) -> int | None:
     secret = hmac.new(b"WebAppData", BOT_TOKEN.encode(), hashlib.sha256).digest()
     expected = hmac.new(secret, check_string.encode(), hashlib.sha256).hexdigest()
     if not received or not hmac.compare_digest(expected, received):
+        return None
+    # Подписанные данные действуют сутки: без даты или старше — не принимаем,
+    # иначе однажды утёкшая ссылка запуска работала бы вечно
+    auth_date = data.get("auth_date", "")
+    if not auth_date.isdigit():
+        return None
+    auth_date = int(auth_date)
+    if auth_date > 10**12:                      # MAX может прислать время в миллисекундах
+        auth_date //= 1000
+    if not 0 <= time.time() - auth_date <= INIT_DATA_MAX_AGE:
         return None
     return json.loads(data.get("user", "{}")).get("id")
 

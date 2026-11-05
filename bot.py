@@ -459,6 +459,11 @@ def handle_update(update):
     else:
         return
 
+    # СОКРАТ — личный наставник: в групповых чатах и каналах молчим,
+    # иначе в чате класса бот начнёт отвечать на каждое сообщение
+    if message['recipient'].get('chat_type', 'dialog') != 'dialog':
+        return
+
     chat_id = message['recipient']['chat_id']
     with chat_lock(chat_id), Session(engine) as session:
         user = db.get_user(session, sender['user_id'], sender.get('first_name', ''))
