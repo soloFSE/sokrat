@@ -148,6 +148,7 @@ function render() {
           ${nav("study", "💬", "Учёба")}
           ${nav("progress", "📊", "Мой прогресс")}
           ${nav("quiz", "📝", "Тест по ошибкам")}
+          ${nav("class", "🏫", "Класс")}
         </nav>
         <div class="side-title"><span>Мои темы</span><button id="new-topic">＋ Новая</button></div>
         <div class="topics">
@@ -168,6 +169,7 @@ function render() {
 
   if (state.view === "progress") renderProgress();
   else if (state.view === "quiz") renderQuiz();
+  else if (state.view === "class") renderClass();
   else renderStudy();
 }
 
@@ -436,6 +438,157 @@ function deleteModal() {
     } catch (err) { toast(err.message); }
   });
   document.body.appendChild(back);
+}
+
+// ---------- класс: ученик и кабинет учителя ----------
+
+async function renderClass() {
+  const main = document.getElementById("main");
+  main.innerHTML = topbar("Класс") + '<div class="page"><div class="page-inner"><p class="muted">Загрузка…</p></div></div>';
+  bindTopbar();
+  let data;
+  try { data = await api("/api/classes"); } catch (err) { toast(err.message); return; }
+  if (state.view !== "class") return;          // пока грузили, ученик ушёл на другой экран
+
+  const student = data.student;
+  const studentCard = student ? `
+    <div class="card"><h3>🏫 Мой класс: ${esc(student.name)}</h3>
+      ${student.teacher ? `<p class="muted small" style="margin-top:-8px">Учитель: ${esc(student.teacher)}</p>` : ""}
+      ${student.assignments.length ? `<table class="table"><tr><th>Задание</th><th>Выдано</th><th>Статус</th><th></th></tr>
+        ${student.assignments.map((a) => `<tr><td><b>${esc(a.topic)}</b>${a.note ? `<div class="muted small">${esc(a.note)}</div>` : ""}</td>
+          <td class="muted">${a.created}</td>
+          <td>${a.solved ? `✅ решено ${a.solved}` : a.started ? "▶️ начато" : "🆕 новое"}</td>
+          <td class="num"><button class="btn ghost" data-assign="${a.id}">${a.started ? "Продолжить" : "Начать"}</button></td></tr>`).join("")}</table>`
+        : '<p class="muted">Заданий пока нет — когда учитель выдаст тему, она появится здесь и придёт в MAX.</p>'}
+      <button class="btn ghost" id="leave-class" style="margin-top:12px">Выйти из класса</button>
+    </div>` : `
+    <div class="card"><h3>🔑 Вступить в класс</h3>
+      <p class="muted small" style="margin-top:-8px">Код даёт учитель. Тогда он сможет выдавать тебе задания.</p>
+      <form class="custom-topic" id="join-form" style="margin-top:0">
+        <input id="join-code" placeholder="Код класса, например K7M2QX" maxlength="12" autocomplete="off">
+        <button class="btn" type="submit">Вступить</button>
+      </form>
+    </div>`;
+
+  const teachingCard = data.teaching.length ? `
+    <div class="card" style="margin-top:16px"><h3>👩‍🏫 Мои классы как учителя</h3>
+      <table class="table">${data.teaching.map((c) => `<tr class="click" data-class="${c.id}">
+        <td><b>${esc(c.name)}</b></td><td>код <b>${esc(c.code)}</b></td><td class="num">${c.students} уч.</td><td class="num">›</td></tr>`).join("")}</table>
+    </div>` : "";
+
+  main.querySelector(".page-inner").innerHTML = studentCard + teachingCard + `
+    <div class="card" style="margin-top:16px"><h3>Я учитель — создать класс</h3>
+      <p class="muted small" style="margin-top:-8px">Получите код для учеников, сводку ошибок класса и выдачу заданий.</p>
+      <form class="custom-topic" id="class-form" style="margin-top:0">
+        <input id="class-name" placeholder="Название, например «9 Б, алгебра»" maxlength="100">
+        <button class="btn" type="submit">Создать</button>
+      </form>
+    </div>`;
+
+  main.querySelectorAll("[data-assign]").forEach((b) => b.addEventListener("click", () => startAssignment(+b.dataset.assign)));
+  main.querySelectorAll("[data-class]").forEach((r) => r.addEventListener("click", () => renderTeacher(+r.dataset.class)));
+  document.getElementById("leave-class")?.addEventListener("click", async () => {
+    try { await api("/api/classes/leave", "POST"); renderClass(); } catch (err) { toast(err.message); }
+  });
+  document.getElementById("join-form")?.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    try {
+      const r = await api("/api/classes/join", "POST", { code: document.getElementById("join-code").value });
+      toast(`Ты в классе «${r.name}» 🎉`);
+      renderClass();
+    } catch (err) { toast(err.message); }
+  });
+  document.getElementById("class-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const name = document.getElementById("class-name").value.trim();
+    if (!name) return;
+    try {
+      const r = await api("/api/classes", "POST", { name });
+      renderTeacher(r.id);
+    } catch (err) { toast(err.message); }
+  });
+}
+
+async function startAssignment(id) {
+  state.view = "study";
+  state.space = { id: 0, topic: "Задание", hints: 0, max_hints: 3, messages: [] };
+  const space = await withBusy(api(`/api/assignments/${id}/start`, "POST"));
+  state.space = space;
+  if (space) await refreshMe();
+  render();
+}
+
+async function renderTeacher(classId) {
+  const main = document.getElementById("main");
+  let c;
+  try { c = await api(`/api/classes/${classId}`); } catch (err) { toast(err.message); return; }
+  const presets = TOPICS.map(([, name]) => `<option value="${esc(name)}">`).join("");
+  main.innerHTML = topbar(esc(c.name), `<button class="btn ghost" id="back-class">← Классы</button>`) + `
+    <div class="page"><div class="page-inner">
+      <div class="tiles">
+        <div class="tile"><span>Код для учеников</span><b style="letter-spacing:.08em">${esc(c.code)}</b></div>
+        <div class="tile"><span>Учеников</span><b>${c.students.length}</b></div>
+        <div class="tile"><span>Средний индекс класса</span><b>${c.class_index ?? "—"}</b></div>
+      </div>
+
+      <div class="grid-2">
+        <div class="card"><h3>Типичные ошибки класса</h3>
+          ${c.common_mistakes.length ? c.common_mistakes.map((m) => `
+            <div class="bar-row"><span>${esc(m.type)}</span><b>${m.share}% класса</b></div>
+            <div class="bar"><div style="width:${m.share}%"></div></div>`).join("")
+            : '<p class="muted">Пока нет данных: ошибки появятся, когда ученики начнут проверять решения.</p>'}
+        </div>
+        <div class="card"><h3>Темы, где больше всего ошибок</h3>
+          ${c.weak_topics.length ? `<table class="table">${c.weak_topics.map((t) =>
+            `<tr><td>${esc(t.topic)}</td><td class="num"><b>${t.errors}</b> ошиб.</td></tr>`).join("")}</table>`
+            : '<p class="muted">Пока нет данных.</p>'}
+        </div>
+      </div>
+
+      <div class="card" style="margin-top:16px"><h3>Выдать задание</h3>
+        <form id="assign-form">
+          <div class="custom-topic" style="margin-top:0">
+            <input id="assign-topic" list="topic-presets" placeholder="Тема, например «Логарифмы»" maxlength="200" required>
+            <datalist id="topic-presets">${presets}</datalist>
+          </div>
+          <div class="custom-topic">
+            <input id="assign-note" placeholder="Комментарий для учеников (необязательно): например, «реши 3 задачи до пятницы»" maxlength="1000">
+            <button class="btn" type="submit">Выдать</button>
+          </div>
+        </form>
+        <p class="muted small" style="margin:10px 0 0">Каждому ученику класса придёт сообщение в MAX с кнопкой «Начать задание».</p>
+      </div>
+
+      <div class="card" style="margin-top:16px"><h3>Задания</h3>
+        ${c.assignments.length ? `<table class="table"><tr><th>Тема</th><th>Выдано</th><th class="num">Начали</th><th class="num">Решили задачу</th></tr>
+          ${c.assignments.map((a) => `<tr><td><b>${esc(a.topic)}</b>${a.note ? `<div class="muted small">${esc(a.note)}</div>` : ""}</td>
+            <td class="muted">${a.created}</td><td class="num">${a.started} из ${a.total}</td><td class="num">${a.solved} из ${a.total}</td></tr>`).join("")}</table>`
+          : '<p class="muted">Заданий ещё не было.</p>'}
+      </div>
+
+      <div class="card" style="margin-top:16px"><h3>Ученики</h3>
+        ${c.students.length ? `<table class="table"><tr><th>Ученик</th><th class="num">Индекс</th><th class="num">Решено</th>
+            <th class="num">Сам с 1-й попытки</th><th class="num">Ошибок в работе</th><th class="num">Был</th></tr>
+          ${c.students.map((s) => `<tr><td>${esc(s.name)}</td><td class="num"><b>${s.index ?? "—"}</b></td><td class="num">${s.solved}</td>
+            <td class="num">${s.first_try}</td><td class="num">${s.open_mistakes}</td><td class="num muted">${s.last_active ?? "—"}</td></tr>`).join("")}</table>`
+          : `<p class="muted">Пока никто не вступил. Продиктуйте ученикам код <b>${esc(c.code)}</b>:
+              в боте «🏫 Мой класс» → «Вступить по коду».</p>`}
+      </div>
+    </div></div>`;
+  bindTopbar();
+  document.getElementById("back-class").addEventListener("click", () => renderClass());
+  document.getElementById("assign-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const button = e.target.querySelector("button");
+    button.disabled = true;
+    try {
+      const r = await api(`/api/classes/${classId}/assignments`, "POST", {
+        topic: document.getElementById("assign-topic").value, note: document.getElementById("assign-note").value,
+      });
+      toast(`Задание выдано: уведомление получили ${r.notified} из ${r.students} учеников`);
+      renderTeacher(classId);
+    } catch (err) { toast(err.message); button.disabled = false; }
+  });
 }
 
 // ---------- тест по ошибкам ----------

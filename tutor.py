@@ -91,12 +91,17 @@ def photo_to_text(image: bytes | None, text: str) -> tuple[str, str]:
 
 # ---------- темы ----------
 
-def open_topic(session, user, topic: str) -> tuple:
-    """Новая тема: конспект по уровню ученика и первая задача. Возвращает (space, текст)."""
+def open_topic(session, user, topic: str, assignment=None) -> tuple:
+    """Новая тема: конспект по уровню ученика и первая задача. Возвращает (space, текст).
+    Если тему выдал учитель (assignment), тема привязывается к заданию, а комментарий учителя виден в чате."""
     spend_request(user.id)
     space = db.new_space(session, user, topic.strip()[:200])
+    if assignment is not None:
+        space.assignment_id = assignment.id
     session.commit()
     intro = ai.topic_intro(space.topic, **profile(user))
+    if assignment is not None and assignment.note:
+        intro = f"📌 **Задание от учителя:** {assignment.note}\n\n{intro}"
     db.add_message(session, space, "assistant", intro)
     session.commit()
     return space, intro
@@ -239,3 +244,107 @@ def answer_quiz(session, user, quiz_id: int, index: int, option: int) -> dict | 
         result["passed"] = quiz.score >= 0.8 * len(questions)
     session.commit()
     return result
+
+
+# ---------- класс и задания учителя ----------
+
+def create_classroom(session, teacher, name: str):
+    classroom = db.create_classroom(session, teacher, name)
+    session.commit()
+    return classroom
+
+
+def join_classroom(session, student, code: str):
+    classroom = db.classroom_by_code(session, code)
+    if classroom is None:
+        raise TutorError("Класс с таким кодом не найден. Проверь код у учителя — он из 6 символов, например K7M2QX.")
+    student.classroom_id = classroom.id
+    session.commit()
+    return classroom
+
+
+def leave_classroom(session, student) -> None:
+    student.classroom_id = None
+    session.commit()
+
+
+def own_classroom(session, teacher, classroom_id: int):
+    """Класс, если его ведёт этот учитель; чужой класс посмотреть нельзя."""
+    classroom = session.get(db.Classroom, classroom_id)
+    if classroom is None or classroom.teacher_id != teacher.id:
+        raise TutorError("Класс не найден")
+    return classroom
+
+
+def create_assignment(session, teacher, classroom_id: int, topic: str, note: str = "") -> tuple:
+    """Учитель выдаёт тему классу. Возвращает (задание, ученики) — ученикам бот пришлёт уведомление."""
+    classroom = own_classroom(session, teacher, classroom_id)
+    topic = topic.strip()[:200]
+    if len(topic) < 2:
+        raise TutorError("Укажи тему задания")
+    assignment = db.Assignment(classroom_id=classroom.id, topic=topic, note=note.strip()[:1000])
+    session.add(assignment)
+    session.commit()
+    return assignment, db.class_students(session, classroom)
+
+
+def start_assignment(session, student, assignment_id: int) -> tuple:
+    """Ученик начинает задание: открываем его тему (или продолжаем, если уже начинал)."""
+    assignment = session.get(db.Assignment, assignment_id)
+    if assignment is None or assignment.classroom_id != student.classroom_id:
+        raise TutorError("Задание не найдено — возможно, ты не в этом классе")
+    existing = db.assignment_space(session, assignment, student)
+    if existing is not None:
+        student.current_space_id = existing.id
+        session.commit()
+        last = next((m.content for m in reversed(existing.messages) if m.role == "assistant"), "")
+        return existing, last
+    return open_topic(session, student, assignment.topic, assignment)
+
+
+def teacher_dashboard(session, teacher, classroom_id: int) -> dict:
+    """Всё, что видит учитель: ученики с индексом, типичные ошибки класса и выполнение заданий."""
+    classroom = own_classroom(session, teacher, classroom_id)
+    summary = db.class_summary(session, classroom)
+    students = db.class_students(session, classroom)
+    total = len(students)
+    common_mistakes = [
+        {"type": ai.ERROR_TYPES.get(t, t), "students": n, "share": round(100 * n / total) if total else 0}
+        for t, n in sorted(summary["type_students"].items(), key=lambda x: -x[1])
+    ]
+    weak_topics = [{"topic": t, "errors": n} for t, n in sorted(summary["topic_errors"].items(), key=lambda x: -x[1])]
+    assignments = []
+    for a in db.class_assignments(session, classroom):
+        progress = [db.assignment_progress(session, a, s) for s in students]
+        assignments.append({
+            "id": a.id, "topic": a.topic, "note": a.note, "created": a.created_at.strftime("%d.%m"),
+            "started": sum(p["started"] for p in progress),
+            "solved": sum(p["solved"] > 0 for p in progress),
+            "total": total,
+        })
+    indexes = [s["index"] for s in summary["students"] if s["index"] is not None]
+    return {
+        "id": classroom.id, "name": classroom.name, "code": classroom.code,
+        "students": summary["students"],
+        "class_index": round(sum(indexes) / len(indexes)) if indexes else None,
+        "common_mistakes": common_mistakes[:5],
+        "weak_topics": weak_topics[:5],
+        "assignments": assignments,
+    }
+
+
+def student_classroom(session, student) -> dict | None:
+    """Что видит ученик: свой класс и задания с отметкой, начато ли и сколько решено."""
+    if not student.classroom_id:
+        return None
+    classroom = session.get(db.Classroom, student.classroom_id)
+    if classroom is None:
+        return None
+    teacher = session.get(db.User, classroom.teacher_id)
+    return {
+        "name": classroom.name,
+        "teacher": teacher.name if teacher else "",
+        "assignments": [{"id": a.id, "topic": a.topic, "note": a.note, "created": a.created_at.strftime("%d.%m"),
+                         **db.assignment_progress(session, a, student)}
+                        for a in db.class_assignments(session, classroom)],
+    }

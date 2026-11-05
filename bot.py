@@ -65,7 +65,8 @@ def button(text, payload):
 MENU = [
     [button("📚 Новая тема", "new_topic"), button("📂 Мои темы", "my_topics")],
     [button("📝 Тест по ошибкам", "quiz"), button("📊 Мой прогресс", "progress")],
-    [button("🎓 Мой уровень", "level"), button("❓ Помощь", "help")],
+    [button("🏫 Мой класс", "class"), button("🎓 Мой уровень", "level")],
+    [button("❓ Помощь", "help")],
 ]
 MENU_BUTTON = button("☰ Меню", "menu")
 
@@ -118,20 +119,38 @@ def split_long(text, limit=MAX_MESSAGE):
     return parts or [""]
 
 
-def send(chat_id, text, buttons=None):
+def send(chat_id, text, buttons=None, user_id=None):
+    """Отправляет сообщение в чат (chat_id) или лично ученику по его id в MAX (user_id)."""
+    target = {"user_id": user_id} if user_id else {"chat_id": chat_id}
     parts = split_long(text)
     for i, part in enumerate(parts):
         body = {"text": to_html(part), "format": "html"}
         if buttons and i == len(parts) - 1:          # кнопки — только под последней частью
             body["attachments"] = [{"type": "inline_keyboard", "payload": {"buttons": buttons}}]
-        resp = httpx.post(f"{API}/messages", headers=HEADERS, params={"chat_id": chat_id},
+        resp = httpx.post(f"{API}/messages", headers=HEADERS, params=target,
                           json=body, verify=CERT, timeout=30)
         if resp.status_code >= 400:
             print("MAX не принял сообщение с разметкой:", resp.status_code, resp.text[:200])
             body.update(text=plain(part))
             body.pop("format")
-            httpx.post(f"{API}/messages", headers=HEADERS, params={"chat_id": chat_id},
+            httpx.post(f"{API}/messages", headers=HEADERS, params=target,
                        json=body, verify=CERT, timeout=30)
+
+
+def notify_assignment(assignment, teacher_name, students):
+    """Рассылает ученикам класса новое задание. Вызывается и из бота, и с сайта учителя.
+    Если кому-то не доставилось (например, ученик удалил чат с ботом) — продолжаем с остальными."""
+    text = f"📌 **Новое задание{' от ' + teacher_name if teacher_name else ''}:** {assignment.topic}"
+    if assignment.note:
+        text += f"\n\n{assignment.note}"
+    delivered = 0
+    for student in students:
+        try:
+            send(None, text, [[button("▶️ Начать задание", f"assign:{assignment.id}")]], user_id=student.id)
+            delivered += 1
+        except Exception as e:
+            print("Не удалось отправить задание ученику", student.id, repr(e))
+    return delivered
 
 
 def typing(chat_id):
@@ -362,6 +381,41 @@ def show_progress(session, user, chat_id):
     send(chat_id, "\n".join(lines), [[button("🌐 Веб-кабинет", "web")]] + MENU)
 
 
+# ---------- класс ----------
+
+def show_classroom(session, user, chat_id):
+    """Ученику — его класс и задания; учителю — его классы с кодами; новичку — как вступить или создать."""
+    lines, rows = [], []
+    info = tutor.student_classroom(session, user)
+    if info:
+        lines.append(f"🏫 Ты в классе «**{info['name']}**»"
+                     + (f", учитель — {info['teacher']}" if info["teacher"] else ""))
+        if info["assignments"]:
+            lines.append("\n**Задания:**")
+            for a in info["assignments"][:8]:
+                status = f"✅ решено {a['solved']}" if a["solved"] else ("▶️ начато" if a["started"] else "🆕 новое")
+                lines.append(f"• {a['topic']} — {status}")
+                rows.append([button(f"{a['topic'][:40]}", f"assign:{a['id']}")])
+        else:
+            lines.append("Заданий пока нет — учитель пришлёт их сюда.")
+        rows.append([button("🚪 Выйти из класса", "leave_class")])
+
+    teaching = db.teacher_classrooms(session, user)
+    if teaching:
+        lines.append("\n👩‍🏫 **Твои классы как учителя:**")
+        for c in teaching:
+            lines.append(f"• {c.name} — код **{c.code}**, учеников: {len(db.class_students(session, c))}")
+        lines.append("Сводка класса, ошибки учеников и выдача заданий — в веб-кабинете.")
+        rows.append([button("🌐 Веб-кабинет", "web")])
+
+    if not info:
+        lines.insert(0, "Вступи в класс, и учитель сможет выдавать тебе задания, а ты — видеть их здесь."
+                        if not teaching else "")
+        rows.insert(0, [button("🔑 Вступить по коду", "join")])
+    rows.append([button("👩‍🏫 Создать класс (я учитель)", "new_class")])
+    send(chat_id, "\n".join(line for line in lines if line) or "🏫 Класс", rows + [[MENU_BUTTON]])
+
+
 # ---------- маршрутизация ----------
 
 def handle_message(session, user, chat_id, message):
@@ -403,6 +457,19 @@ def handle_message(session, user, chat_id, message):
 
     if user.mode == "topic" and text:
         start_topic(session, user, chat_id, text.strip())
+    elif user.mode == "join" and text:
+        user.mode = "chat"
+        classroom = tutor.join_classroom(session, user, text)
+        send(chat_id, f"Готово! Ты в классе «**{classroom.name}**» 🎉\n"
+                      "Когда учитель выдаст задание, я пришлю его сюда.", MENU)
+    elif user.mode == "new_class" and text:
+        user.mode = "chat"
+        classroom = tutor.create_classroom(session, user, text)
+        send(chat_id, f"Класс «**{classroom.name}**» создан ✅\n\n"
+                      f"Код для учеников: **{classroom.code}**\n"
+                      "Ученики вступают так: «🏫 Мой класс» → «Вступить по коду».\n\n"
+                      "Сводку класса, ошибки учеников и выдачу заданий смотри в веб-кабинете.",
+             [[button("🌐 Веб-кабинет", "web")], [MENU_BUTTON]])
     elif user.mode == "check":
         check_in_space(session, user, chat_id, text, image_url)
     else:
@@ -410,7 +477,7 @@ def handle_message(session, user, chat_id, message):
 
 
 # Кнопки, которые сами переводят бота в режим ожидания; любая другая кнопка этот режим сбрасывает
-MODE_BUTTONS = ("check", "new_topic")
+MODE_BUTTONS = ("check", "new_topic", "join", "new_class")
 
 
 def handle_button(session, user, chat_id, payload):
@@ -444,6 +511,25 @@ def handle_button(session, user, chat_id, payload):
         give_next_task(session, user, chat_id)
     elif payload == "quiz":
         start_quiz(session, user, chat_id)
+    elif payload == "class":
+        show_classroom(session, user, chat_id)
+    elif payload == "join":
+        user.mode = "join"
+        session.commit()
+        send(chat_id, "Напиши код класса, который дал учитель (6 символов, например K7M2QX).",
+             [[button("↩️ Отмена", "cancel")]])
+    elif payload == "new_class":
+        user.mode = "new_class"
+        session.commit()
+        send(chat_id, "Как назвать класс? Например, «9 Б, алгебра».", [[button("↩️ Отмена", "cancel")]])
+    elif payload == "leave_class":
+        tutor.leave_classroom(session, user)
+        send(chat_id, "Ты вышел из класса.", MENU)
+    elif payload.startswith("assign:"):
+        send(chat_id, "⏳ Открываю задание…")
+        typing(chat_id)
+        space, text = tutor.start_assignment(session, user, int(payload.split(":")[1]))
+        send(chat_id, text, task_keyboard(space))
     elif payload == "web":
         code = db.new_login_code(session, user)
         session.commit()

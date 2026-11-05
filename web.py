@@ -241,6 +241,80 @@ def get_next_task(space_id: int, user_id: int = Depends(current_user_id)):
         return space_view(session, result["space"])
 
 
+# ---------- класс и кабинет учителя ----------
+
+class ClassIn(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+
+
+class JoinIn(BaseModel):
+    code: str = Field(min_length=4, max_length=12)
+
+
+class AssignmentIn(BaseModel):
+    topic: str = Field(min_length=2, max_length=200)
+    note: str = Field(default="", max_length=1000)
+
+
+@app.get("/api/classes")
+def classes(user_id: int = Depends(current_user_id)):
+    """Класс ученика с заданиями и классы, которые ведёт этот человек как учитель."""
+    with Session(db.engine) as session:
+        user = load_user(session, user_id)
+        return {
+            "student": tutor.student_classroom(session, user),
+            "teaching": [{"id": c.id, "name": c.name, "code": c.code,
+                          "students": len(db.class_students(session, c))}
+                         for c in db.teacher_classrooms(session, user)],
+        }
+
+
+@app.post("/api/classes")
+def create_class(body: ClassIn, user_id: int = Depends(current_user_id)):
+    with Session(db.engine) as session:
+        classroom = tutor.create_classroom(session, load_user(session, user_id), body.name)
+        return {"id": classroom.id, "code": classroom.code}
+
+
+@app.post("/api/classes/join")
+def join_class(body: JoinIn, user_id: int = Depends(current_user_id)):
+    with Session(db.engine) as session:
+        classroom = tutor.join_classroom(session, load_user(session, user_id), body.code)
+        return {"name": classroom.name}
+
+
+@app.post("/api/classes/leave")
+def leave_class(user_id: int = Depends(current_user_id)):
+    with Session(db.engine) as session:
+        tutor.leave_classroom(session, load_user(session, user_id))
+    return {"ok": True}
+
+
+@app.get("/api/classes/{classroom_id}")
+def class_dashboard(classroom_id: int, user_id: int = Depends(current_user_id)):
+    """Кабинет учителя: открыть может только учитель этого класса."""
+    with Session(db.engine) as session:
+        return tutor.teacher_dashboard(session, load_user(session, user_id), classroom_id)
+
+
+@app.post("/api/classes/{classroom_id}/assignments")
+def create_assignment(classroom_id: int, body: AssignmentIn, user_id: int = Depends(current_user_id)):
+    with Session(db.engine) as session:
+        teacher = load_user(session, user_id)
+        assignment, students = tutor.create_assignment(session, teacher, classroom_id, body.topic, body.note)
+        # Ученикам приходит сообщение в MAX с кнопкой «Начать задание»
+        import bot                       # здесь, а не наверху: сайт работает и без бота (например, в тестах)
+        delivered = bot.notify_assignment(assignment, teacher.name, students) if BOT_TOKEN else 0
+        return {"id": assignment.id, "notified": delivered, "students": len(students)}
+
+
+@app.post("/api/assignments/{assignment_id}/start")
+def start_assignment(assignment_id: int, user_id: int = Depends(current_user_id)):
+    with Session(db.engine) as session:
+        space, _ = tutor.start_assignment(session, load_user(session, user_id), assignment_id)
+        return space_view(session, space)
+
+
 # ---------- тест по ошибкам ----------
 
 class AnswerIn(BaseModel):

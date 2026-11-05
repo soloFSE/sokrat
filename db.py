@@ -42,6 +42,8 @@ class User(Base):
     # Профиль: от него зависят глубина объяснений и сложность задач
     grade: Mapped[int | None] = mapped_column()                 # класс 5–11
     goal: Mapped[str | None] = mapped_column(String(20))        # school | oge | ege_base | ege_prof
+    # Класс, в котором ученик учится (вступил по коду учителя)
+    classroom_id: Mapped[int | None] = mapped_column(ForeignKey("classrooms.id", use_alter=True))
 
     spaces: Mapped[list["Space"]] = relationship(back_populates="user", foreign_keys="Space.user_id")
 
@@ -54,6 +56,8 @@ class Space(Base):
     topic: Mapped[str] = mapped_column(String(200), default="Свободный разговор")
     created_at: Mapped[datetime] = mapped_column(default=datetime.now)
     hints: Mapped[int] = mapped_column(default=0)               # подсказок по текущей задаче (0–3)
+    # Если тему выдал учитель — номер задания
+    assignment_id: Mapped[int | None] = mapped_column(ForeignKey("assignments.id", use_alter=True))
 
     user: Mapped[User] = relationship(back_populates="spaces", foreign_keys=[user_id])
     messages: Mapped[list["Message"]] = relationship(back_populates="space", order_by="Message.id")
@@ -88,6 +92,28 @@ class Check(Base):
     created_at: Mapped[datetime] = mapped_column(default=datetime.now)
 
 
+class Classroom(Base):
+    """Класс учителя. Ученики вступают по короткому коду."""
+    __tablename__ = "classrooms"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    teacher_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    name: Mapped[str] = mapped_column(String(100))
+    code: Mapped[str] = mapped_column(String(8), unique=True)
+    created_at: Mapped[datetime] = mapped_column(default=datetime.now)
+
+
+class Assignment(Base):
+    """Задание учителя классу: тема, которую нужно разобрать, и комментарий."""
+    __tablename__ = "assignments"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    classroom_id: Mapped[int] = mapped_column(ForeignKey("classrooms.id"))
+    topic: Mapped[str] = mapped_column(String(200))
+    note: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(default=datetime.now)
+
+
 class Quiz(Base):
     """Тест по личным ошибкам ученика. Вопросы и ответы храним как JSON-текст."""
     __tablename__ = "quizzes"
@@ -112,8 +138,9 @@ NEW_COLUMNS = {
         "web_code_expires": "DATETIME",
         "grade": "INTEGER",
         "goal": "VARCHAR(20)",
+        "classroom_id": "INTEGER",
     },
-    "spaces": {"hints": "INTEGER DEFAULT 0"},
+    "spaces": {"hints": "INTEGER DEFAULT 0", "assignment_id": "INTEGER"},
     "checks": {"hints": "INTEGER DEFAULT 0"},
 }
 with engine.begin() as conn:
@@ -303,6 +330,17 @@ def delete_user_data(session: Session, user: User) -> None:
     """Полностью удаляет ученика: переписку, темы, проверки, ошибки и тесты. Восстановить нельзя."""
     space_ids = [s.id for s in session.scalars(select(Space).where(Space.user_id == user.id))]
     user.current_space_id = None
+    user.classroom_id = None
+    # Если это учитель — удаляем его классы и задания; ученики остаются, просто без класса
+    for classroom in session.scalars(select(Classroom).where(Classroom.teacher_id == user.id)).all():
+        assignment_ids = [a.id for a in class_assignments(session, classroom)]
+        if assignment_ids:
+            session.query(Space).filter(Space.assignment_id.in_(assignment_ids)).update(
+                {Space.assignment_id: None}, synchronize_session=False)
+            session.query(Assignment).filter(Assignment.id.in_(assignment_ids)).delete(synchronize_session=False)
+        session.query(User).filter(User.classroom_id == classroom.id).update(
+            {User.classroom_id: None}, synchronize_session=False)
+        session.delete(classroom)
     session.flush()
     session.query(Quiz).filter(Quiz.user_id == user.id).delete()
     session.query(Check).filter(Check.user_id == user.id).delete()
@@ -310,3 +348,72 @@ def delete_user_data(session: Session, user: User) -> None:
         session.query(Message).filter(Message.space_id.in_(space_ids)).delete(synchronize_session=False)
     session.query(Space).filter(Space.user_id == user.id).delete()
     session.delete(user)
+
+
+# ---------- классы и задания учителя ----------
+
+CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"     # без похожих 0/O и 1/I — код диктуют вслух
+
+
+def create_classroom(session: Session, teacher: User, name: str) -> Classroom:
+    while True:
+        code = "".join(secrets.choice(CODE_ALPHABET) for _ in range(6))
+        if not session.scalars(select(Classroom).where(Classroom.code == code)).first():
+            break
+    classroom = Classroom(teacher_id=teacher.id, name=name.strip()[:100] or "Мой класс", code=code)
+    session.add(classroom)
+    session.flush()
+    return classroom
+
+
+def classroom_by_code(session: Session, code: str) -> Classroom | None:
+    code = code.strip().upper().replace(" ", "")
+    return session.scalars(select(Classroom).where(Classroom.code == code)).first()
+
+
+def teacher_classrooms(session: Session, teacher: User) -> list[Classroom]:
+    return session.scalars(select(Classroom).where(Classroom.teacher_id == teacher.id).order_by(Classroom.id)).all()
+
+
+def class_students(session: Session, classroom: Classroom) -> list[User]:
+    return session.scalars(select(User).where(User.classroom_id == classroom.id).order_by(User.name)).all()
+
+
+def class_assignments(session: Session, classroom: Classroom) -> list[Assignment]:
+    return session.scalars(
+        select(Assignment).where(Assignment.classroom_id == classroom.id).order_by(Assignment.id.desc())
+    ).all()
+
+
+def assignment_space(session: Session, assignment: Assignment, student: User) -> Space | None:
+    """Тема ученика, открытая по этому заданию, или None, если он ещё не начинал."""
+    return session.scalars(
+        select(Space).where(Space.user_id == student.id, Space.assignment_id == assignment.id)
+    ).first()
+
+
+def assignment_progress(session: Session, assignment: Assignment, student: User) -> dict:
+    """Как ученик выполняет задание: начал ли и сколько задач решил в этой теме."""
+    space = assignment_space(session, assignment, student)
+    if space is None:
+        return {"started": False, "solved": 0, "mistakes": 0}
+    return {"started": True, **space_stats(session, space)}
+
+
+def class_summary(session: Session, classroom: Classroom) -> dict:
+    """Сводка для учителя: индекс каждого ученика и типичные ошибки класса."""
+    students = class_students(session, classroom)
+    rows, type_students, topic_errors = [], {}, {}
+    for student in students:
+        stats = independence(session, student)
+        last = session.scalars(select(Message.created_at).join(Space).where(Space.user_id == student.id)
+                               .order_by(Message.id.desc())).first()
+        rows.append({"id": student.id, "name": student.name or "Ученик", "index": stats["index"],
+                     "solved": stats["solved"], "first_try": stats["first_try"],
+                     "open_mistakes": sum(stats["mistake_types"].values()),
+                     "last_active": last.strftime("%d.%m") if last else None})
+        for error_type in stats["mistake_types"]:
+            type_students[error_type] = type_students.get(error_type, 0) + 1
+        for mistake in open_mistakes(session, student, limit=100):
+            topic_errors[mistake.topic] = topic_errors.get(mistake.topic, 0) + 1
+    return {"students": rows, "type_students": type_students, "topic_errors": topic_errors}
