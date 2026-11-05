@@ -62,13 +62,17 @@ def reference_answer(spec: str) -> set | None:
         if kind == "уравнение" and body.count("=") == 1:
             left, right = (_parse(part) for part in body.split("="))
             roots = sp.solveset(sp.Eq(left, right), x, domain=sp.S.Reals)
+            if roots is sp.S.EmptySet:
+                return set()                     # корней нет — правильный ответ «нет корней»
             if isinstance(roots, sp.FiniteSet):
                 candidates = list(roots)
-            else:
+            elif isinstance(roots, sp.ConditionSet):
                 # solveset не справился (например, с логарифмами) — пробуем solve и берём действительные корни
                 candidates = [r for r in sp.solve(sp.Eq(left, right), x) if r.evalf().is_real]
                 if not candidates:
                     return None              # не нашли решений — не судим, чтобы не обидеть ученика
+            else:
+                return None                      # бесконечно много корней (sin x = 0) — числами не сравнить
             return {complex(r.evalf()) for r in candidates if _defined(left, r) and _defined(right, r)}
         if kind == "выражение":
             value = sp.nsimplify(_parse(body)).evalf()

@@ -12,6 +12,7 @@ from collections import defaultdict, deque
 
 import ai
 import db
+import mathcheck
 
 HISTORY_LIMIT = 20          # сколько последних сообщений отправлять в ИИ
 FREE_TOPIC = "Свободный разговор"
@@ -99,7 +100,7 @@ def open_topic(session, user, topic: str, assignment=None) -> tuple:
     if assignment is not None:
         space.assignment_id = assignment.id
     session.commit()
-    intro = ai.topic_intro(space.topic, **profile(user))
+    intro = remember_task(space, ai.topic_intro(space.topic, **profile(user)))
     if assignment is not None and assignment.note:
         intro = f"📌 **Задание от учителя:** {assignment.note}\n\n{intro}"
     db.add_message(session, space, "assistant", intro)
@@ -163,13 +164,46 @@ def next_task(session, user) -> dict:
     space = db.current_space(session, user)
     space.hints = 0                     # новая задача — подсказки заново
     session.commit()
-    task = ai.next_task(history(session, space), topic_of(space), **profile(user))
+    task = remember_task(space, ai.next_task(history(session, space), topic_of(space), **profile(user)))
     db.add_message(session, space, "assistant", task)
     session.commit()
     return {"space": space, "text": task}
 
 
 # ---------- автопроверка ----------
+
+def remember_task(space, text: str) -> str:
+    """Запоминает выданную задачу и строку проверки; ученику возвращает текст без служебной строки."""
+    text, spec = mathcheck.split_check_line(text)
+    space.task_check = spec
+    task = text.rsplit("🧩", 1)
+    space.task_text = (("🧩" + task[1]) if len(task) == 2 else text).replace("**", "").strip()
+    return text
+
+
+def apply_math_check(space, result: dict) -> dict:
+    """Верность ответа решает математика, если её можно применить: модель часто ошибается в арифметике.
+
+    Применяем, только если ученик решает именно выданную задачу (same_task) и ответ удалось разобрать.
+    Модель при этом остаётся — она объясняет, где ошибка.
+    """
+    if result["verdict"] == "unknown" or not space.task_check or result.get("same_task") is False:
+        return result
+    math_ok = mathcheck.verdict(space.task_check, result.get("student_answer"))
+    if math_ok is None:
+        return result
+    result["math_checked"] = True
+    if math_ok and result["verdict"] != "correct":
+        # Модель засомневалась, но ответ совпал с эталоном — ученик прав
+        result.update(verdict="correct", error_type=None, error_label=None, step=None,
+                      feedback="Ответ верный.")
+    elif not math_ok and result["verdict"] == "correct":
+        # Модель похвалила, но ответ не совпадает с эталоном — не даём закрепиться ошибке
+        result.update(verdict="error", error_type="computational", error_label=ai.ERROR_TYPES["computational"],
+                      step=result.get("step") or "окончательный ответ",
+                      feedback="Ответ не совпадает с верным. Перепроверь вычисления и не забудь про ОДЗ.")
+    return result
+
 
 def check(session, user, text: str, image: bytes | None = None) -> dict:
     """Проверяет решение: верно / тип ошибки и где искать. Ошибки сохраняются для теста и индекса."""
@@ -178,11 +212,14 @@ def check(session, user, text: str, image: bytes | None = None) -> dict:
     spend_request(user.id)
     space = db.current_space(session, user)
     content, recognized = photo_to_text(image, text)
-    result = ai.check_solution(history(session, space), content, topic_of(space))
+    result = ai.check_solution(history(session, space), content, topic_of(space), space.task_text)
+    result = apply_math_check(space, result)
     hints_used = space.hints
 
     if result["verdict"] == "correct":
         text = f"✅ **Верно!** {result['feedback']}"
+        if result.get("math_checked"):
+            text += "\n\n🧮 Ответ сверен с эталоном математически."
         if hints_used:
             text += f"\n\nПодсказок взято: {hints_used}. В следующий раз попробуй сначала сам — индекс вырастет 💪"
     elif result["verdict"] == "unknown":

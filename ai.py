@@ -146,6 +146,15 @@ def ask(history: list, topic: str = "", grade=None, goal=None, model: str = CHAT
     return complete([{"role": "system", "content": system_prompt(topic, grade, goal)}] + history, model=model)
 
 
+# Служебная строка для проверки ответа математикой (SymPy, файл mathcheck.py). Ученик её не видит
+TASK_CHECK_LINE = """
+Самой последней строкой допиши служебную строку для автоматической проверки (ученик её не увидит):
+ПРОВЕРКА: уравнение: <левая часть> = <правая часть>   — если задача: решить уравнение с переменной x;
+ПРОВЕРКА: выражение: <выражение>                       — если нужно найти значение числового выражения;
+ПРОВЕРКА: нет                                          — для всех остальных задач.
+Запись — в синтаксисе Python: x**2, sqrt(x), log(x+1, 3) — логарифм по основанию 3, pi, sin(x)."""
+
+
 TOPIC_INTRO_PROMPT = """Ученик открыл тему «{topic}». Напиши стартовое сообщение строго в таком виде:
 
 **📘 О теме**
@@ -154,9 +163,10 @@ TOPIC_INTRO_PROMPT = """Ученик открыл тему «{topic}». Напи
 
 **🧩 Задача для начала**
 Одна задача по теме, соответствующая уровню ученика (для профиля ЕГЭ — уровня ЕГЭ профиль).
-Только условие, БЕЗ решения и ответа.
+Только условие, БЕЗ решения и ответа. Ответ должен быть «красивым», как в школьных задачах:
+целое число, простая дробь или простой корень вроде √10.
 
-В конце одной строкой предложи написать, с чего ученик начнёт решать."""
+В конце одной строкой предложи написать, с чего ученик начнёт решать.""" + TASK_CHECK_LINE
 
 
 def topic_intro(topic: str, grade=None, goal=None) -> str:
@@ -186,8 +196,9 @@ def hint(history: list, level: int, topic: str = "", grade=None, goal=None) -> s
 
 
 NEXT_TASK_PROMPT = """Дай ученику следующую задачу по теме — чуть сложнее предыдущей из переписки
-и по его уровню. Только условие, БЕЗ решения и ответа. Начни строку с «🧩 », в конце одной
-фразой предложи написать, с чего он начнёт."""
+и по его уровню. Только условие, БЕЗ решения и ответа. Ответ должен быть «красивым»: целое число,
+простая дробь или простой корень. Начни строку с «🧩 », в конце одной
+фразой предложи написать, с чего он начнёт.""" + TASK_CHECK_LINE
 
 
 def next_task(history: list, topic: str = "", grade=None, goal=None) -> str:
@@ -214,7 +225,9 @@ CHECK_PROMPT = """Ты проверяешь решение школьника п
 {{"verdict": "correct" | "error" | "incomplete",
   "error_type": "computational" | "rule" | "method" | "careless" | "incomplete" | null,
   "step": "в каком шаге или месте ошибка, своими словами" | null,
-  "feedback": "1–2 предложения для ученика"}}
+  "feedback": "1–2 предложения для ученика",
+  "student_answer": "окончательный ответ ученика: только числа через «;» (например «2; 3» или «sqrt(10)»), «нет корней» или null, если ответа нет",
+  "same_task": true | false — решает ли ученик именно «Задачу для проверки» (если она указана)}}
 
 "correct" — ТОЛЬКО если в решении есть окончательный ответ на вопрос задачи и он верный.
 Если шаги верные, но до ответа ученик не дошёл — это "incomplete", а не "correct".
@@ -278,14 +291,17 @@ def parse_json(text: str) -> dict:
     if data:
         return data
     result = {}
-    for key in ("verdict", "error_type", "step", "feedback"):
+    for key in ("verdict", "error_type", "step", "feedback", "student_answer"):
         found = re.search(rf'"{key}"\s*:\s*(null|"([^"]*)")', text)
         if found:
             result[key] = found.group(2)       # None, если в ответе null
+    same_task = re.search(r'"same_task"\s*:\s*(true|false)', text)
+    if same_task:
+        result["same_task"] = same_task.group(1) == "true"
     return result
 
 
-def check_solution(history: list, solution: str, topic: str = "") -> dict:
+def check_solution(history: list, solution: str, topic: str = "", task: str = "") -> dict:
     """Проверяет решение ученика. Возвращает словарь: verdict, error_type, step, feedback, error_label."""
     if looks_like_injection(solution):
         # Это не решение, а попытка накрутить проверку: в модель не отправляем, в базу не пишем
@@ -294,6 +310,8 @@ def check_solution(history: list, solution: str, topic: str = "") -> dict:
     # Ученик не может «закрыть» метку решения раньше времени и дописать свои указания
     solution = solution.replace("<решение>", "").replace("</решение>", "")
     prompt = CHECK_PROMPT.format(solution=solution)
+    if task:
+        prompt = f"Задача для проверки (последняя, которую выдал наставник):\n{task}\n\n" + prompt
     if topic:
         prompt = f"Тема: «{topic}».\n" + prompt
     answer = httpx.post(

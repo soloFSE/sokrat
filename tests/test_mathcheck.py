@@ -52,3 +52,47 @@ def test_verdict():
 
 def test_no_code_execution_through_answer():
     assert mc.parse_answer("__import__('os').system('echo hi')") is None
+
+
+# ---------- математика поверх вердикта модели (tutor.apply_math_check) ----------
+
+import tutor
+
+
+class Space:
+    task_check = "уравнение: x**2 - 5*x + 6 = 0"
+
+
+def model(verdict, answer, same_task=True):
+    return {"verdict": verdict, "student_answer": answer, "same_task": same_task, "error_type": None,
+            "error_label": None, "step": None, "feedback": "отзыв модели"}
+
+
+def test_math_overrules_model_that_praised_wrong_answer():
+    result = tutor.apply_math_check(Space(), model("correct", "6; -1"))
+    assert result["verdict"] == "error" and result["math_checked"]
+
+
+def test_math_overrules_model_that_rejected_right_answer():
+    result = tutor.apply_math_check(Space(), model("error", "2; 3"))
+    assert result["verdict"] == "correct"
+
+
+def test_math_is_skipped_for_another_task():
+    result = tutor.apply_math_check(Space(), model("correct", "7", same_task=False))
+    assert result["verdict"] == "correct" and "math_checked" not in result
+
+
+def test_math_is_skipped_when_answer_is_unclear():
+    result = tutor.apply_math_check(Space(), model("incomplete", None))
+    assert result["verdict"] == "incomplete" and "math_checked" not in result
+
+
+def test_remember_task_hides_service_line():
+    class S:
+        task_check = task_text = ""
+    shown = tutor.remember_task(S, "📘 О теме\n...\n🧩 Реши x² − 5x + 6 = 0\nС чего начнёшь?\n"
+                                   "ПРОВЕРКА: уравнение: x**2 - 5*x + 6 = 0")
+    assert "ПРОВЕРКА" not in shown
+    assert S.task_check == "уравнение: x**2 - 5*x + 6 = 0"
+    assert S.task_text.startswith("🧩 Реши")

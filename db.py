@@ -58,6 +58,9 @@ class Space(Base):
     hints: Mapped[int] = mapped_column(default=0)               # подсказок по текущей задаче (0–3)
     # Если тему выдал учитель — номер задания
     assignment_id: Mapped[int | None] = mapped_column(ForeignKey("assignments.id", use_alter=True))
+    # Текущая задача и строка для проверки ответа математикой (см. mathcheck.py)
+    task_text: Mapped[str] = mapped_column(Text, default="")
+    task_check: Mapped[str] = mapped_column(Text, default="")
 
     user: Mapped[User] = relationship(back_populates="spaces", foreign_keys=[user_id])
     messages: Mapped[list["Message"]] = relationship(back_populates="space", order_by="Message.id")
@@ -140,7 +143,8 @@ NEW_COLUMNS = {
         "goal": "VARCHAR(20)",
         "classroom_id": "INTEGER",
     },
-    "spaces": {"hints": "INTEGER DEFAULT 0", "assignment_id": "INTEGER"},
+    "spaces": {"hints": "INTEGER DEFAULT 0", "assignment_id": "INTEGER",
+               "task_text": "TEXT DEFAULT ''", "task_check": "TEXT DEFAULT ''"},
     "checks": {"hints": "INTEGER DEFAULT 0"},
 }
 with engine.begin() as conn:
