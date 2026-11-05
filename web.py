@@ -11,7 +11,9 @@ import hashlib
 import hmac
 import json
 import os
+import threading
 import time
+from collections import defaultdict, deque
 from pathlib import Path
 from urllib.parse import parse_qsl
 
@@ -101,11 +103,34 @@ class CodeIn(BaseModel):
     code: str
 
 
+# Защита от перебора кода: неудачные попытки с одного адреса и по всему сервису за последние 10 минут
+LOGIN_WINDOW = 10 * 60
+LOGIN_FAILS_PER_IP = 5
+LOGIN_FAILS_TOTAL = 50
+_login_fails: dict[str, deque] = defaultdict(deque)
+_login_lock = threading.Lock()
+
+
+def _recent(times: deque, now: float) -> int:
+    while times and now - times[0] > LOGIN_WINDOW:
+        times.popleft()
+    return len(times)
+
+
 @app.post("/api/login")
-def login(body: CodeIn):
+def login(body: CodeIn, request: Request):
+    ip = request.client.host if request.client else "?"
+    now = time.time()
+    with _login_lock:
+        if (_recent(_login_fails[ip], now) >= LOGIN_FAILS_PER_IP
+                or _recent(_login_fails["*"], now) >= LOGIN_FAILS_TOTAL):
+            raise HTTPException(429, "Слишком много неверных попыток. Подожди 10 минут и получи новый код в боте.")
     with Session(db.engine) as session:
         user = db.user_by_code(session, body.code.strip())
         if user is None:
+            with _login_lock:
+                _login_fails[ip].append(now)
+                _login_fails["*"].append(now)
             raise HTTPException(400, "Код неверный или устарел. Получи новый в боте.")
         session.commit()
         return {"token": sign(user.id)}

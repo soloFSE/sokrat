@@ -51,3 +51,35 @@ def test_session_token_roundtrip_and_forgery():
     assert web.user_from_token(token) == 42
     assert web.user_from_token("43." + token.split(".")[1]) is None
     assert web.user_from_token("garbage") is None
+
+
+# ---------- защита входа по коду от перебора ----------
+
+from fastapi.testclient import TestClient
+from sqlalchemy.orm import Session
+
+import db
+
+
+def test_login_code_brute_force_is_blocked(monkeypatch):
+    monkeypatch.setattr(web, "_login_fails", web.defaultdict(web.deque))
+    client = TestClient(web.app)
+    with Session(db.engine) as session:
+        code = db.new_login_code(session, db.get_user(session, 8001, "Аня"))
+        session.commit()
+    wrong = "000000" if code != "000000" else "111111"
+    for _ in range(web.LOGIN_FAILS_PER_IP):
+        assert client.post("/api/login", json={"code": wrong}).status_code == 400
+    # после 5 неверных попыток даже правильный код с этого адреса не принимается
+    assert client.post("/api/login", json={"code": code}).status_code == 429
+
+
+def test_login_with_right_code_works_once(monkeypatch):
+    monkeypatch.setattr(web, "_login_fails", web.defaultdict(web.deque))
+    client = TestClient(web.app)
+    with Session(db.engine) as session:
+        code = db.new_login_code(session, db.get_user(session, 8002, "Тимур"))
+        session.commit()
+    first = client.post("/api/login", json={"code": code})
+    assert first.status_code == 200 and web.user_from_token(first.json()["token"]) == 8002
+    assert client.post("/api/login", json={"code": code}).status_code == 400     # код одноразовый
