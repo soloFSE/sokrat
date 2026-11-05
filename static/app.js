@@ -200,7 +200,7 @@ function renderStudy() {
     main.innerHTML = topbar("Новая тема") + `
       <div class="page"><div class="welcome">
         <h1>Что разберём сегодня?</h1>
-        <p class="muted">Я объясню тему под твой уровень и дам задачу. Решать будешь сам — а я помогу вопросами и подсказками.</p>
+        <p class="muted">Я объясню тему под твой уровень и дам задачу. Решаешь ты, а я помогаю вопросами и подсказками.</p>
         <div class="topic-grid">
           ${TOPICS.map(([ico, name]) => `<button class="topic-card" data-topic="${esc(name)}"><span class="ico">${ico}</span><b>${esc(name)}</b></button>`).join("")}
         </div>
@@ -209,9 +209,9 @@ function renderStudy() {
           <button class="btn" type="submit">Начать</button>
         </form>
         <div class="how">
-          <div><b>💡 Подсказки</b><span class="muted">Застрял — сначала намёк, потом правило, потом похожий пример.</span></div>
+          <div><b>💡 Подсказки</b><span class="muted">Не получается — сначала намёк, потом правило, потом похожий пример.</span></div>
           <div><b>✔ Проверка</b><span class="muted">Пришли решение или фото тетради — покажу, где ошибка.</span></div>
-          <div><b>📊 Индекс</b><span class="muted">Чем больше решаешь сам, тем он выше.</span></div>
+          <div><b>📊 Индекс</b><span class="muted">Чем больше задач решено без подсказок, тем он выше.</span></div>
         </div>
       </div></div>`;
     bindTopbar();
@@ -373,13 +373,13 @@ function renderProgress() {
           <div><h3 style="margin-bottom:6px">Индекс самостоятельности</h3>
           <p class="muted small" style="margin:0">${me.index === null
             ? "Появится после первой задачи, отправленной на проверку."
-            : "Решил сам с первой проверки — 100 баллов. Каждая неудачная проверка −20, каждая подсказка −15. Среднее за последние 10 задач."}</p></div>
+            : "Задача решена с первой проверки без подсказок — 100 баллов. Каждая неудачная проверка −20, каждая подсказка −15. Среднее за последние 10 задач."}</p></div>
         </div>
         <div class="card chart"><h3>Как менялся индекс</h3>${chart(me.history)}</div>
       </div>
       <div class="tiles">
         <div class="tile"><b>${me.solved}</b><span>задач решено</span></div>
-        <div class="tile"><b>${me.first_try}</b><span>сам с первой попытки</span></div>
+        <div class="tile"><b>${me.first_try}</b><span>с первой попытки без подсказок</span></div>
         <div class="tile"><b>${me.spaces.length}</b><span>тем изучено</span></div>
       </div>
       <div class="grid-2">
@@ -568,7 +568,7 @@ async function renderTeacher(classId) {
 
       <div class="card" style="margin-top:16px"><h3>Ученики</h3>
         ${c.students.length ? `<table class="table"><tr><th>Ученик</th><th class="num">Индекс</th><th class="num">Решено</th>
-            <th class="num">Сам с 1-й попытки</th><th class="num">Ошибок в работе</th><th class="num">Был</th></tr>
+            <th class="num">С 1-й попытки</th><th class="num">Ошибок в работе</th><th class="num">Активность</th></tr>
           ${c.students.map((s) => `<tr><td>${esc(s.name)}</td><td class="num"><b>${s.index ?? "—"}</b></td><td class="num">${s.solved}</td>
             <td class="num">${s.first_try}</td><td class="num">${s.open_mistakes}</td><td class="num muted">${s.last_active ?? "—"}</td></tr>`).join("")}</table>`
           : `<p class="muted">Пока никто не вступил. Продиктуйте ученикам код <b>${esc(c.code)}</b>:
@@ -603,7 +603,7 @@ async function renderQuiz() {
         <div style="font-size:40px">📝</div>
         <h3 style="font-size:20px;margin:8px 0">Тест по твоим ошибкам</h3>
         <p class="muted">${count
-          ? `Соберу 5 вопросов именно на те места, где ты ошибался (${count}). Наберёшь 4 из 5 — ошибки будут считаться проработанными.`
+          ? `Соберу 5 вопросов именно на те места, где были ошибки (${count}). Наберёшь 4 из 5 — ошибки будут считаться проработанными.`
           : "Ошибок для теста пока нет. Реши задачу и отправь её на проверку — если ошибёшься, тест соберётся на это место."}</p>
         <button class="btn block" id="start-quiz" ${count ? "" : "disabled"}>Собрать тест</button>
       </div></div>`;
