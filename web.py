@@ -154,6 +154,15 @@ def update_profile(body: ProfileIn, user_id: int = Depends(current_user_id)):
     return {"ok": True}
 
 
+@app.delete("/api/me")
+def delete_me(user_id: int = Depends(current_user_id)):
+    """Удаление всех данных ученика по его просьбе (152-ФЗ)."""
+    with Session(db.engine) as session:
+        db.delete_user_data(session, load_user(session, user_id))
+        session.commit()
+    return {"ok": True}
+
+
 # ---------- темы и чат ----------
 
 class TopicIn(BaseModel):

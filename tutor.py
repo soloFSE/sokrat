@@ -5,6 +5,7 @@
 или веб: функции получают ученика и текст, а возвращают данные — как их показать, решает интерфейс.
 """
 import json
+import re
 import threading
 import time
 from collections import defaultdict, deque
@@ -27,6 +28,26 @@ class TutorError(Exception):
 
 _requests: dict[int, deque] = defaultdict(deque)
 _requests_lock = threading.Lock()
+
+
+# Тревожные сигналы: на них отвечаем заготовленным текстом сразу, не полагаясь на модель
+DISTRESS = re.compile(
+    r"не хочу жить|жить не хочу|покончить с собой|убить себя|суицид|самоубий|порезать себя|"
+    r"причинить себе|хочу умереть|меня (бьют|травят|избивают|унижают)|(травят|издеваются|бьют) меня|"
+    r"травля|меня трогают|мне страшно дома|никому не нужен",
+    re.IGNORECASE,
+)
+SUPPORT_TEXT = (
+    "Мне очень жаль, что тебе сейчас так тяжело. Ты не должен справляться с этим один 💙\n\n"
+    "Пожалуйста, расскажи об этом взрослому, которому доверяешь: родителям, учителю или школьному психологу.\n\n"
+    "Если хочется поговорить прямо сейчас — позвони на **Детский телефон доверия: 8-800-2000-122**. "
+    "Это бесплатно, анонимно и круглосуточно, там помогут.\n\n"
+    "Я рядом, и к математике мы вернёмся, когда ты будешь готов."
+)
+
+
+def needs_support(text: str) -> bool:
+    return bool(DISTRESS.search(text or ""))
 
 
 def spend_request(user_id: int) -> None:
@@ -92,8 +113,19 @@ def switch_space(session, user, space_id: int):
 
 # ---------- диалог, подсказки, задачи ----------
 
+def support(session, user, text: str) -> dict:
+    """Ученику плохо: отвечаем заботой и телефоном доверия, без модели и без лимитов."""
+    space = db.current_space(session, user)
+    db.add_message(session, space, "user", text)
+    db.add_message(session, space, "assistant", SUPPORT_TEXT)
+    session.commit()
+    return {"space": space, "text": SUPPORT_TEXT, "recognized": "", "verdict": None}
+
+
 def reply(session, user, text: str, image: bytes | None = None) -> dict:
     """Обычное сообщение ученика в текущей теме: ответ наставника."""
+    if needs_support(text):
+        return support(session, user, text)
     spend_request(user.id)
     space = db.current_space(session, user)
     content, recognized = photo_to_text(image, text)
@@ -136,6 +168,8 @@ def next_task(session, user) -> dict:
 
 def check(session, user, text: str, image: bytes | None = None) -> dict:
     """Проверяет решение: верно / тип ошибки и где искать. Ошибки сохраняются для теста и индекса."""
+    if needs_support(text):
+        return support(session, user, text)
     spend_request(user.id)
     space = db.current_space(session, user)
     content, recognized = photo_to_text(image, text)

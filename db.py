@@ -295,3 +295,18 @@ def space_stats(session: Session, space: Space) -> dict:
         "solved": sum(c.verdict == "correct" for c in checks),
         "mistakes": sum(c.verdict != "correct" for c in checks),
     }
+
+
+# ---------- удаление данных (152-ФЗ) ----------
+
+def delete_user_data(session: Session, user: User) -> None:
+    """Полностью удаляет ученика: переписку, темы, проверки, ошибки и тесты. Восстановить нельзя."""
+    space_ids = [s.id for s in session.scalars(select(Space).where(Space.user_id == user.id))]
+    user.current_space_id = None
+    session.flush()
+    session.query(Quiz).filter(Quiz.user_id == user.id).delete()
+    session.query(Check).filter(Check.user_id == user.id).delete()
+    if space_ids:
+        session.query(Message).filter(Message.space_id.in_(space_ids)).delete(synchronize_session=False)
+    session.query(Space).filter(Space.user_id == user.id).delete()
+    session.delete(user)

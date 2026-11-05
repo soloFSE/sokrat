@@ -38,7 +38,20 @@ HELP = (
     "📝 **Тест по ошибкам** — вопросы именно на те места, где ты ошибался.\n"
     "📊 **Мой прогресс** — индекс самостоятельности: насколько ты решаешь сам.\n\n"
     "Я не решаю задачи за тебя — я помогаю дойти до ответа самому. Так ты действительно научишься.\n\n"
-    "Команды: /menu — меню, /help — эта справка."
+    "Команды: /menu — меню, /help — эта справка, /privacy — какие данные я храню, "
+    "/delete — удалить все мои данные."
+)
+
+PRIVACY = (
+    "**Какие данные я храню**\n\n"
+    "• имя из профиля MAX, класс и цель (школа, ОГЭ, ЕГЭ);\n"
+    "• переписку со мной по темам — чтобы помнить, на чём мы остановились;\n"
+    "• результаты проверок решений, ошибки и тесты — для индекса самостоятельности.\n\n"
+    "Телефон, фамилию, школу и геолокацию я **не** собираю. Фото задачи используется только для распознавания: "
+    "после него сразу удаляется из GigaChat, в базе остаётся лишь распознанный текст.\n\n"
+    "Данные хранятся на сервере проекта и никому не передаются. Тексты сообщений обрабатывает "
+    "нейросеть GigaChat (Сбер, серверы в России).\n\n"
+    "Удалить все свои данные можно в любой момент командой /delete."
 )
 
 
@@ -379,6 +392,14 @@ def handle_message(session, user, chat_id, message):
     if command in ("/help", "помощь"):
         send(chat_id, HELP, MENU)
         return
+    if command == "/privacy":
+        send(chat_id, PRIVACY, MENU)
+        return
+    if command == "/delete":
+        send(chat_id, "Удалить **все** твои данные: переписку, темы, ошибки, тесты и индекс? "
+                      "Вернуть их будет нельзя.",
+             [[button("🗑 Да, удалить всё", "delete_confirm"), button("↩️ Отмена", "cancel")]])
+        return
 
     if user.mode == "topic" and text:
         start_topic(session, user, chat_id, text.strip())
@@ -401,6 +422,10 @@ def handle_button(session, user, chat_id, payload):
         send(chat_id, "☰ **Меню**", MENU)
     elif payload == "help":
         send(chat_id, HELP, MENU)
+    elif payload == "delete_confirm":
+        db.delete_user_data(session, user)
+        session.commit()
+        send(chat_id, "Готово: все твои данные удалены 🗑\nЕсли захочешь вернуться — просто напиши /start.")
     elif payload == "level":
         ask_grade(session, user, chat_id)
     elif payload.startswith("grade:"):

@@ -400,11 +400,42 @@ function renderProgress() {
             <td class="num">${s.solved}</td><td class="num">${s.mistakes}</td></tr>`).join("")}</table>`
           : '<p class="muted">Тем пока нет.</p>'}
       </div>
+      <div class="card" style="margin-top:16px"><h3>Мои данные</h3>
+        <p class="muted small">Храним имя из MAX, класс и цель, переписку по темам, проверки, ошибки и тесты —
+          для индекса и чтобы помнить, на чём ты остановился. Телефон, фамилию и школу не собираем.
+          Фото после распознавания сразу удаляется.</p>
+        <button class="btn ghost" id="delete-me">🗑 Удалить все мои данные</button>
+      </div>
     </div></div>`;
   bindTopbar();
   main.querySelectorAll("[data-space]").forEach((r) => r.addEventListener("click", () => openSpace(+r.dataset.space)));
   main.querySelectorAll("[data-view]").forEach((b) => b.addEventListener("click", () => go(b.dataset.view)));
   document.getElementById("level").addEventListener("click", () => levelModal());
+  document.getElementById("delete-me").addEventListener("click", () => deleteModal());
+}
+
+// Подтверждение удаления — своим окном: системный confirm() внутри MAX может не работать
+function deleteModal() {
+  const back = document.createElement("div");
+  back.className = "modal-back";
+  back.innerHTML = `<div class="modal">
+    <h3>Удалить все данные?</h3>
+    <p class="muted">Переписка, темы, ошибки, тесты и индекс будут удалены навсегда. Вернуть их будет нельзя.</p>
+    <button class="btn block" id="confirm-delete" style="background:var(--bad);color:#fff">Да, удалить всё</button>
+    <button class="btn ghost block" id="cancel-delete">Отмена</button>
+  </div>`;
+  back.querySelector("#cancel-delete").addEventListener("click", () => back.remove());
+  back.addEventListener("click", (e) => { if (e.target === back) back.remove(); });
+  back.querySelector("#confirm-delete").addEventListener("click", async () => {
+    try {
+      await api("/api/me", "DELETE");
+      back.remove();
+      storage.clear();
+      app.innerHTML = `<div class="login"><div class="login-card"><div class="logo-mark">С</div>
+        <h1>Данные удалены</h1><p class="muted">Если захочешь вернуться — просто напиши боту /start.</p></div></div>`;
+    } catch (err) { toast(err.message); }
+  });
+  document.body.appendChild(back);
 }
 
 // ---------- тест по ошибкам ----------
