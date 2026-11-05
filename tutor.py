@@ -5,6 +5,9 @@
 или веб: функции получают ученика и текст, а возвращают данные — как их показать, решает интерфейс.
 """
 import json
+import threading
+import time
+from collections import defaultdict, deque
 
 import ai
 import db
@@ -13,9 +16,32 @@ HISTORY_LIMIT = 20          # сколько последних сообщени
 FREE_TOPIC = "Свободный разговор"
 MAX_HINTS = 3
 
+# Ограничение запросов к ИИ на одного ученика: живому ученику хватит с запасом,
+# а скрипт или «залипшая» кнопка не съест весь лимит GigaChat
+LIMITS = [(60, 12), (24 * 3600, 300)]       # не больше 12 в минуту и 300 в сутки
+
 
 class TutorError(Exception):
     """Понятная ученику ошибка: «подсказки кончились», «нет ошибок для теста» и т. п."""
+
+
+_requests: dict[int, deque] = defaultdict(deque)
+_requests_lock = threading.Lock()
+
+
+def spend_request(user_id: int) -> None:
+    """Учитывает один запрос к ИИ. Если ученик превысил лимит — TutorError с понятным текстом."""
+    now = time.time()
+    with _requests_lock:
+        times = _requests[user_id]
+        while times and now - times[0] > LIMITS[-1][0]:
+            times.popleft()                      # забываем запросы старше суток
+        for window, limit in LIMITS:
+            if sum(1 for t in times if now - t <= window) >= limit:
+                if window == 60:
+                    raise TutorError("Ты пишешь очень быстро 🙂 Подожди минутку и продолжим.")
+                raise TutorError("На сегодня лимит вопросов исчерпан — отдохни, завтра продолжим 💪")
+        times.append(now)
 
 
 def profile(user) -> dict:
@@ -46,6 +72,7 @@ def photo_to_text(image: bytes | None, text: str) -> tuple[str, str]:
 
 def open_topic(session, user, topic: str) -> tuple:
     """Новая тема: конспект по уровню ученика и первая задача. Возвращает (space, текст)."""
+    spend_request(user.id)
     space = db.new_space(session, user, topic.strip()[:200])
     session.commit()
     intro = ai.topic_intro(space.topic, **profile(user))
@@ -67,6 +94,7 @@ def switch_space(session, user, space_id: int):
 
 def reply(session, user, text: str, image: bytes | None = None) -> dict:
     """Обычное сообщение ученика в текущей теме: ответ наставника."""
+    spend_request(user.id)
     space = db.current_space(session, user)
     content, recognized = photo_to_text(image, text)
     db.add_message(session, space, "user", content)
@@ -83,6 +111,7 @@ def hint(session, user) -> dict:
     if space.hints >= MAX_HINTS:
         raise TutorError("Подсказок к этой задаче больше нет. Попробуй сам и отправь решение на проверку — "
                          "я покажу, где ошибка. Или возьми другую задачу.")
+    spend_request(user.id)
     space.hints += 1
     session.commit()
     text = ai.hint(history(session, space), space.hints, topic_of(space), **profile(user))
@@ -93,6 +122,7 @@ def hint(session, user) -> dict:
 
 
 def next_task(session, user) -> dict:
+    spend_request(user.id)
     space = db.current_space(session, user)
     space.hints = 0                     # новая задача — подсказки заново
     session.commit()
@@ -106,6 +136,7 @@ def next_task(session, user) -> dict:
 
 def check(session, user, text: str, image: bytes | None = None) -> dict:
     """Проверяет решение: верно / тип ошибки и где искать. Ошибки сохраняются для теста и индекса."""
+    spend_request(user.id)
     space = db.current_space(session, user)
     content, recognized = photo_to_text(image, text)
     result = ai.check_solution(history(session, space), content, topic_of(space))
@@ -139,6 +170,7 @@ def create_quiz(session, user):
     if not mistakes:
         raise TutorError("У тебя нет непроработанных ошибок 👏 Реши задачу и отправь её на проверку — "
                          "если где-то ошибёшься, я соберу тест именно на это место.")
+    spend_request(user.id)
     descriptions = [f"[{m.topic}] {ai.ERROR_TYPES.get(m.error_type, 'Ошибка')}: {m.description}" for m in mistakes]
     questions = ai.make_quiz(descriptions)
     if not questions:
