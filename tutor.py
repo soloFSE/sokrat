@@ -4,6 +4,7 @@
 Поэтому поведение везде одинаковое, а прогресс ученика общий. Здесь нет ничего про MAX
 или веб: функции получают ученика и текст, а возвращают данные — как их показать, решает интерфейс.
 """
+import hashlib
 import json
 import re
 import threading
@@ -176,9 +177,16 @@ def remember_task(space, text: str) -> str:
     """Запоминает выданную задачу и строку проверки; ученику возвращает текст без служебной строки."""
     text, spec = mathcheck.split_check_line(text)
     space.task_check = spec
+    space.task_solved = False           # новая задача — её снова можно решить и засчитать
     task = text.rsplit("🧩", 1)
     space.task_text = (("🧩" + task[1]) if len(task) == 2 else text).replace("**", "").strip()
     return text
+
+
+def solution_key(content: str) -> str:
+    """Отпечаток решения без пробелов и регистра: «x = 3» и «X=3» — одно и то же решение."""
+    normalized = re.sub(r"\s+", "", content.lower())
+    return hashlib.sha1(normalized.encode()).hexdigest()
 
 
 def apply_math_check(space, result: dict) -> dict:
@@ -209,11 +217,23 @@ def check(session, user, text: str, image: bytes | None = None) -> dict:
     """Проверяет решение: верно / тип ошибки и где искать. Ошибки сохраняются для теста и индекса."""
     if needs_support(text):
         return support(session, user, text)
-    spend_request(user.id)
     space = db.current_space(session, user)
+    if space.task_text and space.task_solved:
+        # Выданную задачу засчитываем один раз: иначе индекс накручивается повторной отправкой
+        return {"space": space, "verdict": "already", "recognized": "",
+                "text": "✅ Эта задача уже решена и засчитана. Повторная проверка индекс не меняет — "
+                        "возьми следующую задачу."}
+    spend_request(user.id)
     content, recognized = photo_to_text(image, text)
     result = ai.check_solution(history(session, space), content, topic_of(space), space.task_text)
     result = apply_math_check(space, result)
+    result["solution_key"] = solution_key(content)
+    if result["verdict"] == "correct" and db.already_accepted(session, user, result["solution_key"]):
+        # Своя задача ученика: то же самое решение второй раз не засчитываем
+        return {"space": space, "verdict": "already", "recognized": recognized,
+                "text": "✅ Это решение уже засчитано раньше — повторно в индекс оно не идёт."}
+    if result["verdict"] == "correct" and space.task_text:
+        space.task_solved = True
     hints_used = space.hints
 
     if result["verdict"] == "correct":

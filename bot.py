@@ -320,7 +320,7 @@ def check_in_space(session, user, chat_id, text, image_url):
     send(chat_id, "🔎 Проверяю решение…")
     typing(chat_id)
     result = tutor.check(session, user, text, image)
-    keyboard = AFTER_CORRECT if result["verdict"] == "correct" else task_keyboard(result["space"])
+    keyboard = AFTER_CORRECT if result["verdict"] in ("correct", "already") else task_keyboard(result["space"])
     send(chat_id, with_photo(result), keyboard)
 
 

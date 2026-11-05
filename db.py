@@ -61,6 +61,8 @@ class Space(Base):
     # Текущая задача и строка для проверки ответа математикой (см. mathcheck.py)
     task_text: Mapped[str] = mapped_column(Text, default="")
     task_check: Mapped[str] = mapped_column(Text, default="")
+    # Выданная задача уже решена: повторная проверка не идёт в индекс, пока не взята следующая
+    task_solved: Mapped[bool] = mapped_column(default=False)
 
     user: Mapped[User] = relationship(back_populates="spaces", foreign_keys=[user_id])
     messages: Mapped[list["Message"]] = relationship(back_populates="space", order_by="Message.id")
@@ -91,6 +93,7 @@ class Check(Base):
     error_type: Mapped[str | None] = mapped_column(String(30))  # см. ERROR_TYPES в ai.py
     description: Mapped[str] = mapped_column(Text, default="")  # где именно ошибка
     hints: Mapped[int] = mapped_column(default=0)               # сколько подсказок взял до этой проверки
+    solution_key: Mapped[str] = mapped_column(String(40), default="")  # отпечаток решения — от повторной сдачи
     resolved: Mapped[bool] = mapped_column(default=False)       # ошибка проработана в тесте
     created_at: Mapped[datetime] = mapped_column(default=datetime.now)
 
@@ -144,8 +147,9 @@ NEW_COLUMNS = {
         "classroom_id": "INTEGER",
     },
     "spaces": {"hints": "INTEGER DEFAULT 0", "assignment_id": "INTEGER",
-               "task_text": "TEXT DEFAULT ''", "task_check": "TEXT DEFAULT ''"},
-    "checks": {"hints": "INTEGER DEFAULT 0"},
+               "task_text": "TEXT DEFAULT ''", "task_check": "TEXT DEFAULT ''",
+               "task_solved": "BOOLEAN DEFAULT 0"},
+    "checks": {"hints": "INTEGER DEFAULT 0", "solution_key": "VARCHAR(40) DEFAULT ''"},
 }
 with engine.begin() as conn:
     for table, new_columns in NEW_COLUMNS.items():
@@ -195,6 +199,7 @@ def add_check(session: Session, user: User, space: Space, result: dict) -> None:
         error_type=result.get("error_type"),
         description=result.get("step") or "",
         hints=space.hints,
+        solution_key=result.get("solution_key", ""),
     ))
     if result["verdict"] == "correct":
         space.hints = 0                 # задача решена — подсказки к следующей считаем заново
@@ -421,3 +426,9 @@ def class_summary(session: Session, classroom: Classroom) -> dict:
         for mistake in open_mistakes(session, student, limit=100):
             topic_errors[mistake.topic] = topic_errors.get(mistake.topic, 0) + 1
     return {"students": rows, "type_students": type_students, "topic_errors": topic_errors}
+
+
+def already_accepted(session: Session, user: User, solution_key: str) -> bool:
+    """Это же решение уже засчитывалось как верное — второй раз в индекс не идёт."""
+    return session.scalars(select(Check).where(
+        Check.user_id == user.id, Check.verdict == "correct", Check.solution_key == solution_key)).first() is not None

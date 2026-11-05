@@ -96,3 +96,51 @@ def test_remember_task_hides_service_line():
     assert "ПРОВЕРКА" not in shown
     assert S.task_check == "уравнение: x**2 - 5*x + 6 = 0"
     assert S.task_text.startswith("🧩 Реши")
+
+
+# ---------- повторная сдача решённой задачи не накручивает индекс ----------
+
+from sqlalchemy.orm import Session
+
+import ai
+import db
+
+
+def test_solved_task_counts_once(monkeypatch):
+    monkeypatch.setattr(tutor, "_requests", tutor.defaultdict(tutor.deque))
+    monkeypatch.setattr(ai, "check_solution", lambda *a, **k: {
+        "verdict": "correct", "error_type": None, "error_label": None, "step": None,
+        "feedback": "Верно", "student_answer": "2; 3", "same_task": True})
+    with Session(db.engine) as session:
+        user = db.get_user(session, 7001, "Аня")
+        space = db.new_space(session, user, "Квадратные уравнения")
+        tutor.remember_task(space, "🧩 Реши x² − 5x + 6 = 0\nПРОВЕРКА: уравнение: x**2 - 5*x + 6 = 0")
+        session.commit()
+
+        first = tutor.check(session, user, "D = 1, ответ 2 и 3")
+        second = tutor.check(session, user, "D = 1, ответ 2 и 3")
+        third = tutor.check(session, user, "по-другому записал: x1=2, x2=3")
+        assert first["verdict"] == "correct"
+        assert second["verdict"] == third["verdict"] == "already"
+        assert db.independence(session, user)["solved"] == 1        # индекс посчитан по одной задаче
+
+        # следующая задача снова засчитывается
+        tutor.remember_task(space, "🧩 Реши x² − 7x + 12 = 0\nПРОВЕРКА: уравнение: x**2 - 7*x + 12 = 0")
+        monkeypatch.setattr(ai, "check_solution", lambda *a, **k: {
+            "verdict": "correct", "error_type": None, "error_label": None, "step": None,
+            "feedback": "Верно", "student_answer": "3; 4", "same_task": True})
+        assert tutor.check(session, user, "ответ 3 и 4")["verdict"] == "correct"
+        assert db.independence(session, user)["solved"] == 2
+
+
+def test_same_own_solution_counts_once(monkeypatch):
+    monkeypatch.setattr(tutor, "_requests", tutor.defaultdict(tutor.deque))
+    monkeypatch.setattr(ai, "check_solution", lambda *a, **k: {
+        "verdict": "correct", "error_type": None, "error_label": None, "step": None, "feedback": "Верно"})
+    with Session(db.engine) as session:
+        user = db.get_user(session, 7002, "Тимур")
+        db.new_space(session, user)                       # свободный разговор, задачу дал сам ученик
+        session.commit()
+        assert tutor.check(session, user, "15% от 200 = 30")["verdict"] == "correct"
+        assert tutor.check(session, user, "15%  от 200 =  30")["verdict"] == "already"
+        assert db.independence(session, user)["solved"] == 1
