@@ -307,6 +307,8 @@ h1, h2, h3 { margin: 0; line-height: 1.25; }
 }
 .pick button.on { border-color: var(--brand); background: var(--brand-soft); color: var(--brand); }
 .pick.col { flex-direction: column; }
+.subject-pick { justify-content: center; margin: 4px 0 14px; }
+#assign-subject { border: 1px solid var(--line); border-radius: 10px; padding: 0 10px; background: var(--panel); color: inherit; font: inherit; }
 .pick.col button { text-align: left; }
 .modal label { display: block; font-size: 13px; font-weight: 600; color: var(--muted); margin: 14px 0 8px; }
 

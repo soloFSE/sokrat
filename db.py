@@ -32,17 +32,13 @@ class User(Base):
     id: Mapped[int] = mapped_column(primary_key=True)          # user_id из MAX
     name: Mapped[str] = mapped_column(String(100), default="")
     created_at: Mapped[datetime] = mapped_column(default=datetime.now)
-    # Пространство, в котором ученик сейчас общается
     current_space_id: Mapped[int | None] = mapped_column(ForeignKey("spaces.id", use_alter=True))
-    # Чего бот ждёт от ученика: "chat" — обычный диалог, "topic" — название новой темы
     mode: Mapped[str] = mapped_column(String(20), default="chat")
-    # Одноразовый код для входа в веб-кабинет (бот присылает его по кнопке)
     web_code: Mapped[str | None] = mapped_column(String(6))
     web_code_expires: Mapped[datetime | None] = mapped_column()
-    # Профиль: от него зависят глубина объяснений и сложность задач
     grade: Mapped[int | None] = mapped_column()                 # класс 5–11
     goal: Mapped[str | None] = mapped_column(String(20))        # school | oge | ege_base | ege_prof
-    # Класс, в котором ученик учится (вступил по коду учителя)
+    subject: Mapped[str] = mapped_column(String(20), default="math")   # math | russian | physics | chemistry | literature
     classroom_id: Mapped[int | None] = mapped_column(ForeignKey("classrooms.id", use_alter=True))
 
     spaces: Mapped[list["Space"]] = relationship(back_populates="user", foreign_keys="Space.user_id")
@@ -54,14 +50,12 @@ class Space(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
     topic: Mapped[str] = mapped_column(String(200), default="Свободный разговор")
+    subject: Mapped[str] = mapped_column(String(20), default="math")
     created_at: Mapped[datetime] = mapped_column(default=datetime.now)
     hints: Mapped[int] = mapped_column(default=0)               # подсказок по текущей задаче (0–3)
-    # Если тему выдал учитель — номер задания
     assignment_id: Mapped[int | None] = mapped_column(ForeignKey("assignments.id", use_alter=True))
-    # Текущая задача и строка для проверки ответа математикой (см. mathcheck.py)
     task_text: Mapped[str] = mapped_column(Text, default="")
     task_check: Mapped[str] = mapped_column(Text, default="")
-    # Выданная задача уже решена: повторная проверка не идёт в индекс, пока не взята следующая
     task_solved: Mapped[bool] = mapped_column(default=False)
 
     user: Mapped[User] = relationship(back_populates="spaces", foreign_keys=[user_id])
@@ -116,6 +110,7 @@ class Assignment(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     classroom_id: Mapped[int] = mapped_column(ForeignKey("classrooms.id"))
     topic: Mapped[str] = mapped_column(String(200))
+    subject: Mapped[str] = mapped_column(String(20), default="math")
     note: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(default=datetime.now)
 
@@ -133,10 +128,8 @@ class Quiz(Base):
     created_at: Mapped[datetime] = mapped_column(default=datetime.now)
 
 
-# Создаём таблицы, если их ещё нет (при первом запуске)
 Base.metadata.create_all(engine)
 
-# create_all не добавляет новые столбцы в уже существующие таблицы — добавляем вручную
 NEW_COLUMNS = {
     "users": {
         "mode": "VARCHAR(20) DEFAULT 'chat'",
@@ -145,10 +138,12 @@ NEW_COLUMNS = {
         "grade": "INTEGER",
         "goal": "VARCHAR(20)",
         "classroom_id": "INTEGER",
+        "subject": "VARCHAR(20) DEFAULT 'math'",
     },
+    "assignments": {"subject": "VARCHAR(20) DEFAULT 'math'"},
     "spaces": {"hints": "INTEGER DEFAULT 0", "assignment_id": "INTEGER",
                "task_text": "TEXT DEFAULT ''", "task_check": "TEXT DEFAULT ''",
-               "task_solved": "BOOLEAN DEFAULT 0"},
+               "task_solved": "BOOLEAN DEFAULT 0", "subject": "VARCHAR(20) DEFAULT 'math'"},
     "checks": {"hints": "INTEGER DEFAULT 0", "solution_key": "VARCHAR(40) DEFAULT ''"},
 }
 with engine.begin() as conn:
@@ -179,7 +174,7 @@ def current_space(session: Session, user: User) -> Space:
 
 
 def new_space(session: Session, user: User, topic: str = "Свободный разговор") -> Space:
-    space = Space(user_id=user.id, topic=topic)
+    space = Space(user_id=user.id, topic=topic, subject=user.subject or "math")
     session.add(space)
     session.flush()                     # чтобы у space появился id
     user.current_space_id = space.id
