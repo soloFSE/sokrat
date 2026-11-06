@@ -44,7 +44,7 @@ SUPPORT_TEXT = (
     "Пожалуйста, расскажи об этом взрослому, которому доверяешь: родителям, учителю или школьному психологу.\n\n"
     "Если хочется поговорить прямо сейчас — позвони на **Детский телефон доверия: 8-800-2000-122**. "
     "Это бесплатно, анонимно и круглосуточно, там помогут.\n\n"
-    "Я рядом, а к математике вернёмся, когда захочется."
+    "Я рядом, а к учёбе вернёмся, когда захочется."
 )
 
 
@@ -67,8 +67,9 @@ def spend_request(user_id: int) -> None:
         times.append(now)
 
 
-def profile(user) -> dict:
-    return {"grade": user.grade, "goal": user.goal}
+def profile(user, space=None) -> dict:
+    subject = (space.subject if space is not None else user.subject) or "math"
+    return {"grade": user.grade, "goal": user.goal, "subject": subject}
 
 
 def topic_of(space) -> str:
@@ -100,8 +101,9 @@ def open_topic(session, user, topic: str, assignment=None) -> tuple:
     space = db.new_space(session, user, topic.strip()[:200])
     if assignment is not None:
         space.assignment_id = assignment.id
+        space.subject = assignment.subject or "math"
     session.commit()
-    intro = remember_task(space, ai.topic_intro(space.topic, **profile(user)))
+    intro = remember_task(space, ai.topic_intro(space.topic, **profile(user, space)))
     if assignment is not None and assignment.note:
         intro = f"📌 **Задание от учителя:** {assignment.note}\n\n{intro}"
     db.add_message(session, space, "assistant", intro)
@@ -114,6 +116,7 @@ def switch_space(session, user, space_id: int):
     if space is None or space.user_id != user.id:      # чужую тему открыть нельзя
         raise TutorError("Тема не найдена")
     user.current_space_id = space.id
+    user.subject = space.subject or "math"
     session.commit()
     return space
 
@@ -138,7 +141,7 @@ def reply(session, user, text: str, image: bytes | None = None) -> dict:
     content, recognized = photo_to_text(image, text)
     db.add_message(session, space, "user", content)
     session.commit()
-    answer = ai.ask(history(session, space), topic_of(space), **profile(user))
+    answer = ai.ask(history(session, space), topic_of(space), **profile(user, space))
     db.add_message(session, space, "assistant", answer)
     session.commit()
     return {"space": space, "text": answer, "recognized": recognized}
@@ -153,7 +156,7 @@ def hint(session, user) -> dict:
     spend_request(user.id)
     space.hints += 1
     session.commit()
-    text = ai.hint(history(session, space), space.hints, topic_of(space), **profile(user))
+    text = ai.hint(history(session, space), space.hints, topic_of(space), **profile(user, space))
     text = f"💡 **Подсказка {space.hints}/{MAX_HINTS} · {ai.HINT_TITLES[space.hints]}**\n\n{text}"
     db.add_message(session, space, "assistant", text)
     session.commit()
@@ -165,7 +168,7 @@ def next_task(session, user) -> dict:
     space = db.current_space(session, user)
     space.hints = 0                     # новая задача — подсказки заново
     session.commit()
-    task = remember_task(space, ai.next_task(history(session, space), topic_of(space), **profile(user)))
+    task = remember_task(space, ai.next_task(history(session, space), topic_of(space), **profile(user, space)))
     db.add_message(session, space, "assistant", task)
     session.commit()
     return {"space": space, "text": task}
@@ -195,6 +198,8 @@ def apply_math_check(space, result: dict) -> dict:
     Применяем, только если ученик решает именно выданную задачу (same_task) и ответ удалось разобрать.
     Модель при этом остаётся — она объясняет, где ошибка.
     """
+    if (getattr(space, "subject", None) or "math") != "math":
+        return result
     if result["verdict"] == "unknown" or not space.task_check or result.get("same_task") is False:
         return result
     math_ok = mathcheck.verdict(space.task_check, result.get("student_answer"))
@@ -333,13 +338,15 @@ def own_classroom(session, teacher, classroom_id: int):
     return classroom
 
 
-def create_assignment(session, teacher, classroom_id: int, topic: str, note: str = "") -> tuple:
+def create_assignment(session, teacher, classroom_id: int, topic: str, note: str = "",
+                      subject: str = "math") -> tuple:
     """Учитель выдаёт тему классу. Возвращает (задание, ученики) — ученикам бот пришлёт уведомление."""
     classroom = own_classroom(session, teacher, classroom_id)
     topic = topic.strip()[:200]
     if len(topic) < 2:
         raise TutorError("Укажи тему задания")
-    assignment = db.Assignment(classroom_id=classroom.id, topic=topic, note=note.strip()[:1000])
+    assignment = db.Assignment(classroom_id=classroom.id, topic=topic, note=note.strip()[:1000],
+                               subject=ai.subject_key(subject))
     session.add(assignment)
     session.commit()
     return assignment, db.class_students(session, classroom)
@@ -374,7 +381,7 @@ def teacher_dashboard(session, teacher, classroom_id: int) -> dict:
     for a in db.class_assignments(session, classroom):
         progress = [db.assignment_progress(session, a, s) for s in students]
         assignments.append({
-            "id": a.id, "topic": a.topic, "note": a.note, "created": a.created_at.strftime("%d.%m"),
+            "id": a.id, "topic": a.topic, "subject": ai.subject_key(a.subject), "note": a.note, "created": a.created_at.strftime("%d.%m"),
             "started": sum(p["started"] for p in progress),
             "solved": sum(p["solved"] > 0 for p in progress),
             "total": total,
@@ -401,7 +408,7 @@ def student_classroom(session, student) -> dict | None:
     return {
         "name": classroom.name,
         "teacher": teacher.name if teacher else "",
-        "assignments": [{"id": a.id, "topic": a.topic, "note": a.note, "created": a.created_at.strftime("%d.%m"),
+        "assignments": [{"id": a.id, "topic": a.topic, "subject": ai.subject_key(a.subject), "note": a.note, "created": a.created_at.strftime("%d.%m"),
                          **db.assignment_progress(session, a, student)}
                         for a in db.class_assignments(session, classroom)],
     }

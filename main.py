@@ -14,6 +14,5 @@ from bot import run_bot
 from web import app
 
 if __name__ == "__main__":
-    # daemon=True: когда останавливаем программу (Ctrl+C), поток бота завершается вместе с ней
     threading.Thread(target=run_bot, daemon=True).start()
     uvicorn.run(app, host=os.getenv("HOST", "127.0.0.1"), port=int(os.getenv("PORT", "8000")))

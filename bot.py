@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 import db
 import tutor
-from ai import ERROR_TYPES, GOALS
+from ai import ERROR_TYPES, GOALS, SUBJECT_ICONS, SUBJECT_TOPICS, SUBJECTS, subject_key
 from db import engine
 
 load_dotenv()
@@ -20,18 +20,16 @@ CERT = "russian_trusted_ca.pem"
 API = "https://platform-api2.max.ru"
 HEADERS = {"Authorization": os.getenv("BOT_TOKEN")}
 
-WEB_URL = os.getenv("WEB_URL", "http://localhost:8000")   # адрес веб-кабинета
-MAX_MESSAGE = 3500  # MAX не принимает слишком длинные сообщения — длинные ответы режем на части
+WEB_URL = os.getenv("WEB_URL", "http://localhost:8000")  
+MAX_MESSAGE = 3500  
 
-# Готовые темы для кнопок; свою тему ученик может написать сообщением
-TOPICS = ["Квадратные уравнения", "Линейные функции", "Проценты", "Теорема Пифагора",
-          "Системы уравнений", "Степени и корни", "Логарифмы", "Тригонометрия"]
 GRADES = [5, 6, 7, 8, 9, 10, 11]
 LETTERS = "АБВГ"
 
 HELP = (
     "**Как со мной заниматься**\n\n"
     "📚 **Новая тема** — объясню тему по твоему уровню и дам первую задачу.\n"
+    "🔄 **Предмет** — математика, русский язык, физика, химия или литература.\n"
     "💬 Можно просто написать вопрос или прислать **фото задачи**.\n"
     "💡 **Подсказка** — если не получается: сначала намёк, потом правило, потом разбор похожей задачи.\n"
     "✔ **Проверить решение** — пришли решение текстом или фото: скажу, верно ли, а если нет — где ошибка.\n"
@@ -44,7 +42,7 @@ HELP = (
 
 PRIVACY = (
     "**Какие данные я храню**\n\n"
-    "• имя из профиля MAX, класс и цель (школа, ОГЭ, ЕГЭ);\n"
+    "• имя из профиля MAX, класс, цель (школа, ОГЭ, ЕГЭ) и выбранный предмет;\n"
     "• переписку со мной по темам — чтобы помнить, на чём мы остановились;\n"
     "• результаты проверок решений, ошибки и тесты — для индекса самостоятельности.\n\n"
     "Телефон, фамилию, школу и геолокацию я **не** собираю. Фото задачи используется только для распознавания: "
@@ -66,7 +64,7 @@ MENU = [
     [button("📚 Новая тема", "new_topic"), button("📂 Мои темы", "my_topics")],
     [button("📝 Тест по ошибкам", "quiz"), button("📊 Мой прогресс", "progress")],
     [button("🏫 Мой класс", "class"), button("🎓 Мой уровень", "level")],
-    [button("❓ Помощь", "help")],
+    [button("🔄 Предмет", "subject"), button("❓ Помощь", "help")],
 ]
 MENU_BUTTON = button("☰ Меню", "menu")
 
@@ -125,7 +123,7 @@ def send(chat_id, text, buttons=None, user_id=None):
     parts = split_long(text)
     for i, part in enumerate(parts):
         body = {"text": to_html(part), "format": "html"}
-        if buttons and i == len(parts) - 1:          # кнопки — только под последней частью
+        if buttons and i == len(parts) - 1:       
             body["attachments"] = [{"type": "inline_keyboard", "payload": {"buttons": buttons}}]
         resp = httpx.post(f"{API}/messages", headers=HEADERS, params=target,
                           json=body, verify=CERT, timeout=30)
@@ -176,7 +174,6 @@ def download(url):
     try:
         resp = httpx.get(url, timeout=30, follow_redirects=True)
     except httpx.ConnectError:
-        # Серверы MAX могут использовать сертификат Минцифры
         resp = httpx.get(url, timeout=30, follow_redirects=True, verify=CERT)
     resp.raise_for_status()
     return resp.content
@@ -206,7 +203,8 @@ def find_image_url(message):
 def ask_grade(session, user, chat_id, greeting=False):
     user.mode = "chat"
     session.commit()
-    text = ("Привет! Я **СОКРАТ** — наставник по математике 👋\n\n"
+    text = ("Привет! Я **СОКРАТ** — школьный наставник 👋\n"
+            "Помогаю с математикой, русским языком, физикой, химией и литературой.\n\n"
             "Я объясняю темы как репетитор, а задачи помогаю решить **самому** — наводящими вопросами "
             "и подсказками. Так ты действительно научишься, а не просто получишь ответ.\n\n"
             if greeting else "")
@@ -221,20 +219,37 @@ def ask_goal(session, user, chat_id):
     send(chat_id, "Какая у тебя цель?", rows)
 
 
+def subject_label(subject) -> str:
+    key = subject_key(subject)
+    return f"{SUBJECT_ICONS[key]} {SUBJECTS[key].capitalize()}"
+
+
+def ask_subject(session, user, chat_id, first=False):
+    """Выбор предмета. first=True — при знакомстве, потом показываем итог профиля."""
+    prefix = "subjf" if first else "subj"
+    keys = list(SUBJECTS)
+    rows = [[button(subject_label(k), f"{prefix}:{k}") for k in keys[i:i + 2]] for i in range(0, len(keys), 2)]
+    if not first:
+        rows.append([MENU_BUTTON])
+    send(chat_id, "Какой предмет разбираем? Его всегда можно сменить в меню.", rows)
+
+
 def profile_done(session, user, chat_id):
-    send(chat_id, f"Отлично, запомнил: {user.grade} класс, {GOALS[user.goal]} ✅\n\n"
+    send(chat_id, f"Отлично, запомнил: {user.grade} класс, {GOALS[user.goal]}, {subject_label(user.subject)} ✅\n\n"
                   "С чего начнём? Открой тему — или просто напиши вопрос либо пришли фото задачи 🙂", MENU)
 
 
 # ---------- темы (пространства) ----------
 
 def ask_for_topic(session, user, chat_id):
-    user.mode = "topic"            # следующее сообщение ученика — название темы
+    user.mode = "topic"           
     session.commit()
-    rows = [[button(TOPICS[i], f"topic:{i}"), button(TOPICS[i + 1], f"topic:{i + 1}")]
-            for i in range(0, len(TOPICS), 2)]
-    send(chat_id, "Какую тему разберём? Выбери кнопкой или **напиши свою** одним сообщением "
-                  "(например, «Показательные неравенства»).", rows + [[MENU_BUTTON]])
+    topics = SUBJECT_TOPICS[subject_key(user.subject)]
+    rows = [[button(topics[i], f"topic:{i}"), button(topics[i + 1], f"topic:{i + 1}")]
+            for i in range(0, len(topics), 2)]
+    send(chat_id, f"Предмет: **{subject_label(user.subject)}**\n\n"
+                  "Какую тему разберём? Выбери кнопкой или **напиши свою** одним сообщением.",
+         rows + [[button("🔄 Другой предмет", "subject"), MENU_BUTTON]])
 
 
 def start_topic(session, user, chat_id, topic):
@@ -253,7 +268,8 @@ def show_my_topics(session, user, chat_id):
     rows = []
     for s in spaces:
         stats = db.space_stats(session, s)
-        rows.append([button(f"{s.topic[:40]} · ✅ {stats['solved']}", f"space:{s.id}")])
+        rows.append([button(f"{SUBJECT_ICONS[subject_key(s.subject)]} {s.topic[:38]} · ✅ {stats['solved']}",
+                            f"space:{s.id}")])
     send(chat_id, "📂 **Твои темы** (рядом — сколько задач решено). Выбери, чтобы продолжить:",
          rows + [[MENU_BUTTON]])
 
@@ -307,7 +323,7 @@ def give_next_task(session, user, chat_id):
 # ---------- автопроверка ----------
 
 def ask_for_solution(session, user, chat_id):
-    user.mode = "check"            # следующее сообщение ученика — решение на проверку
+    user.mode = "check"            
     session.commit()
     send(chat_id, "✍️ Пришли своё решение **одним сообщением**: шаги и ответ. Можно текстом или фото тетради.\n"
                   "Я скажу, верно ли, а если нет — где искать ошибку.", [[button("↩️ Отмена", "cancel")]])
@@ -348,7 +364,7 @@ def send_question(chat_id, quiz, index):
 def answer_question(session, user, chat_id, quiz_id, index, option):
     result = tutor.answer_quiz(session, user, quiz_id, index, option)
     if result is None:
-        return                          # старая кнопка или чужой тест
+        return                          
     if result["ok"]:
         send(chat_id, f"✅ **Верно!**\n{result['explanation']}")
     else:
@@ -421,13 +437,12 @@ def show_classroom(session, user, chat_id):
 def handle_message(session, user, chat_id, message):
     text = message['body'].get('text') or ''
     image_url = find_image_url(message)
-    if not text and not image_url:                            # стикер, голосовое и т. п.
+    if not text and not image_url:                            
         send(chat_id, "Я понимаю текст и фото задач 🙂 Напиши вопрос словами или пришли фото.")
         return
 
     command = text.strip().lower()
     if command == "/start":
-        # Новый разговор, но не плодим пустые: если текущий и так пустой — остаёмся в нём
         space = db.current_space(session, user)
         if space.messages or space.topic != tutor.FREE_TOPIC:
             db.new_space(session, user)
@@ -476,13 +491,12 @@ def handle_message(session, user, chat_id, message):
         reply_in_space(session, user, chat_id, text, image_url)
 
 
-# Кнопки, которые сами переводят бота в режим ожидания; любая другая кнопка этот режим сбрасывает
 MODE_BUTTONS = ("check", "new_topic", "join", "new_class")
 
 
 def handle_button(session, user, chat_id, payload):
     if not payload.startswith(MODE_BUTTONS) and user.mode != "chat":
-        user.mode = "chat"          # ученик передумал: следующее сообщение — обычный вопрос
+        user.mode = "chat"         
         session.commit()
 
     if payload == "menu" or payload == "cancel":
@@ -494,6 +508,13 @@ def handle_button(session, user, chat_id, payload):
         session.commit()
         send(chat_id, "Готово: все твои данные удалены 🗑\nЕсли захочешь вернуться — просто напиши /start.")
     elif payload == "level":
+        if user.grade and user.goal in GOALS:
+            send(chat_id, f"🎓 Твой уровень: **{user.grade} класс, {GOALS[user.goal]}**\n"
+                          f"Предмет: {subject_label(user.subject)}",
+                 [[button("✏️ Изменить", "level_edit"), MENU_BUTTON]])
+        else:
+            ask_grade(session, user, chat_id)
+    elif payload == "level_edit":
         ask_grade(session, user, chat_id)
     elif payload.startswith("grade:"):
         user.grade = int(payload.split(":")[1])
@@ -502,7 +523,16 @@ def handle_button(session, user, chat_id, payload):
     elif payload.startswith("goal:"):
         user.goal = payload.split(":")[1]
         session.commit()
-        profile_done(session, user, chat_id)
+        ask_subject(session, user, chat_id, first=True)
+    elif payload == "subject":
+        ask_subject(session, user, chat_id)
+    elif payload.startswith(("subj:", "subjf:")):
+        user.subject = subject_key(payload.split(":")[1])
+        session.commit()
+        if payload.startswith("subjf:"):
+            profile_done(session, user, chat_id)
+        else:
+            ask_for_topic(session, user, chat_id)
     elif payload == "check":
         ask_for_solution(session, user, chat_id)
     elif payload == "hint":
@@ -545,7 +575,10 @@ def handle_button(session, user, chat_id, payload):
     elif payload == "my_topics":
         show_my_topics(session, user, chat_id)
     elif payload.startswith("topic:"):
-        start_topic(session, user, chat_id, TOPICS[int(payload.split(":")[1])])
+        topics = SUBJECT_TOPICS[subject_key(user.subject)]
+        index = int(payload.split(":")[1])
+        if 0 <= index < len(topics):
+            start_topic(session, user, chat_id, topics[index])
     elif payload.startswith("space:"):
         open_space(session, user, chat_id, int(payload.split(":")[1]))
 
@@ -561,17 +594,14 @@ def handle_update(update):
         callback = update["callback"]
         answer_callback(callback["callback_id"])
         sender = callback["user"]
-        message = update["message"]                  # сообщение, под которым нажали кнопку
+        message = update["message"]                  
     elif kind == "bot_started":
-        # Ученик впервые открыл бота и нажал «Начать»
         sender = update["user"]
         message = {"recipient": {"chat_id": update["chat_id"]}, "body": {"text": "/start"}}
         kind = "message_created"
     else:
         return
 
-    # СОКРАТ — личный наставник: в групповых чатах и каналах молчим,
-    # иначе в чате класса бот начнёт отвечать на каждое сообщение
     if message['recipient'].get('chat_type', 'dialog') != 'dialog':
         return
 
@@ -584,20 +614,17 @@ def handle_update(update):
             else:
                 handle_button(session, user, chat_id, callback.get("payload") or "")
         except tutor.TutorError as e:
-            # Понятная ситуация («подсказки кончились», «нет ошибок для теста») — объясняем ученику
             send(chat_id, str(e), task_keyboard(db.current_space(session, user)))
         except Exception as e:
             print("Ошибка при ответе:", repr(e))
             try:
                 send(chat_id, "Наставник задумался 🤔 Попробуй ещё раз через минуту.", [[MENU_BUTTON]])
             except Exception:
-                pass                          # если и это не отправилось — просто идём дальше
+                pass                          
 
 
 # ---------- главный цикл ----------
 
-# Учеников обслуживаем параллельно: пока ИИ думает над ответом одному, другие не ждут.
-# А сообщения ОДНОГО ученика — строго по очереди, чтобы ответы не перепутались.
 pool = ThreadPoolExecutor(max_workers=8)
 _locks: dict[int, threading.Lock] = {}
 _locks_guard = threading.Lock()
@@ -616,10 +643,9 @@ def safe_handle(update):
 
 
 def run_bot():
-    marker = None  # номер последнего обработанного обновления
+    marker = None  
     print("Бот запущен")
     while True:
-        # 1. Получаем новые сообщения. Если нет связи — ждём и пробуем снова
         params = {"timeout": 30}
         if marker is not None:
             params["marker"] = marker
@@ -629,10 +655,9 @@ def run_bot():
         except Exception as e:
             print("Нет связи с MAX:", e)
             time.sleep(5)
-            continue                          # к следующему кругу while
+            continue                          
         marker = data.get("marker", marker)
 
-        # 2. Каждое обновление — в отдельный поток: сообщение или нажатие кнопки
         for update in data.get("updates", []):
             pool.submit(safe_handle, update)
 

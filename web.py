@@ -26,7 +26,7 @@ from sqlalchemy.orm import Session
 
 import db
 import tutor
-from ai import ERROR_TYPES, GOALS
+from ai import ERROR_TYPES, GOALS, SUBJECT_ICONS, SUBJECT_TOPICS, SUBJECTS, subject_key
 
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
@@ -141,6 +141,7 @@ def login(body: CodeIn, request: Request):
 class ProfileIn(BaseModel):
     grade: int = Field(ge=5, le=11)
     goal: str
+    subject: str = ""
 
 
 @app.get("/api/me")
@@ -153,6 +154,9 @@ def me(user_id: int = Depends(current_user_id)):
             "grade": user.grade,
             "goal": user.goal,
             "goals": GOALS,
+            "subject": subject_key(user.subject),
+            "subjects": {k: {"name": v, "icon": SUBJECT_ICONS[k], "topics": SUBJECT_TOPICS[k]}
+                         for k, v in SUBJECTS.items()},
             "current_space_id": user.current_space_id,
             "index": stats["index"],
             "solved": stats["solved"],
@@ -160,7 +164,8 @@ def me(user_id: int = Depends(current_user_id)):
             "history": stats["history"],
             "mistakes": [{"type": ERROR_TYPES.get(t, t), "count": n}
                          for t, n in sorted(stats["mistake_types"].items(), key=lambda x: -x[1])],
-            "spaces": [{"id": s.id, "topic": s.topic, "created": s.created_at.strftime("%d.%m"),
+            "spaces": [{"id": s.id, "topic": s.topic, "subject": subject_key(s.subject),
+                        "created": s.created_at.strftime("%d.%m"),
                         **db.space_stats(session, s)}
                        for s in db.list_spaces(session, user, limit=30) if s.topic != tutor.FREE_TOPIC],
             "quizzes": [{"date": q.created_at.strftime("%d.%m %H:%M"), "score": q.score,
@@ -172,9 +177,13 @@ def me(user_id: int = Depends(current_user_id)):
 def update_profile(body: ProfileIn, user_id: int = Depends(current_user_id)):
     if body.goal not in GOALS:
         raise HTTPException(400, "Неизвестная цель")
+    if body.subject and body.subject not in SUBJECTS:
+        raise HTTPException(400, "Неизвестный предмет")
     with Session(db.engine) as session:
         user = load_user(session, user_id)
         user.grade, user.goal = body.grade, body.goal
+        if body.subject:
+            user.subject = body.subject
         session.commit()
     return {"ok": True}
 
@@ -192,6 +201,7 @@ def delete_me(user_id: int = Depends(current_user_id)):
 
 class TopicIn(BaseModel):
     topic: str = Field(min_length=2, max_length=200)
+    subject: str = ""
 
 
 class MessageIn(BaseModel):
@@ -201,7 +211,7 @@ class MessageIn(BaseModel):
 
 
 def space_view(session, space) -> dict:
-    return {"id": space.id, "topic": space.topic, "hints": space.hints, "max_hints": tutor.MAX_HINTS,
+    return {"id": space.id, "topic": space.topic, "subject": subject_key(space.subject), "hints": space.hints, "max_hints": tutor.MAX_HINTS,
             "messages": [{"role": m.role, "text": m.content} for m in space.messages]}
 
 
@@ -221,6 +231,8 @@ def decode_photo(photo: str) -> bytes | None:
 def create_space(body: TopicIn, user_id: int = Depends(current_user_id)):
     with Session(db.engine) as session:
         user = load_user(session, user_id)
+        if body.subject in SUBJECTS:
+            user.subject = body.subject
         space, _ = tutor.open_topic(session, user, body.topic)
         return space_view(session, space)
 
@@ -279,6 +291,7 @@ class JoinIn(BaseModel):
 class AssignmentIn(BaseModel):
     topic: str = Field(min_length=2, max_length=200)
     note: str = Field(default="", max_length=1000)
+    subject: str = "math"
 
 
 @app.get("/api/classes")
@@ -326,7 +339,8 @@ def class_dashboard(classroom_id: int, user_id: int = Depends(current_user_id)):
 def create_assignment(classroom_id: int, body: AssignmentIn, user_id: int = Depends(current_user_id)):
     with Session(db.engine) as session:
         teacher = load_user(session, user_id)
-        assignment, students = tutor.create_assignment(session, teacher, classroom_id, body.topic, body.note)
+        assignment, students = tutor.create_assignment(session, teacher, classroom_id, body.topic, body.note,
+                                                         body.subject)
         # Ученикам приходит сообщение в MAX с кнопкой «Начать задание»
         import bot                       # здесь, а не наверху: сайт работает и без бота (например, в тестах)
         delivered = bot.notify_assignment(assignment, teacher.name, students) if BOT_TOKEN else 0

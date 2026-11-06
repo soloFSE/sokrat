@@ -1,11 +1,13 @@
 // Веб-версия СОКРАТа: рабочее место ученика. Данные — из той же базы, что и у бота.
 const app = document.getElementById("app");
 
-const TOPICS = [
-  ["📐", "Квадратные уравнения"], ["📈", "Линейные функции"], ["💯", "Проценты"],
-  ["📏", "Теорема Пифагора"], ["🔗", "Системы уравнений"], ["√", "Степени и корни"],
-  ["㏒", "Логарифмы"], ["📐", "Тригонометрия"],
-];
+// Предметы и готовые темы приходят с сервера (me.subjects), чтобы бот и сайт не расходились
+function subjectOf() {
+  return state.subject || state.me?.subject || "math";
+}
+function subjectIcon(key) {
+  return state.me?.subjects?.[key]?.icon || "📘";
+}
 const GRADES = [5, 6, 7, 8, 9, 10, 11];
 const LETTERS = "АБВГ";
 
@@ -18,6 +20,7 @@ const state = {
   busy: false,       // ждём ответа ИИ
   pending: null,     // сообщение ученика, которое уже показали, но ответа ещё нет
   quiz: null,        // текущий тест
+  subject: null,     // предмет, выбранный на экране новой темы
 };
 
 // ---------- вход и запросы к серверу ----------
@@ -106,7 +109,7 @@ function loginScreen(error = "") {
     <div class="login"><form class="login-card" id="login">
       <div class="logo-mark">С</div>
       <h1>СОКРАТ</h1>
-      <p class="muted">Наставник по математике, который учит думать, а не списывать</p>
+      <p class="muted">Школьный наставник, который учит думать, а не списывать</p>
       <ol class="steps">
         <li>Открой бота СОКРАТ в MAX</li>
         <li>Нажми «📊 Мой прогресс» → «🌐 Веб-кабинет»</li>
@@ -138,7 +141,7 @@ function render() {
   app.innerHTML = `
     <div class="layout" id="layout">
       <aside class="sidebar">
-        <div class="brand"><div class="logo-mark">С</div><div><b>СОКРАТ</b><span>наставник по математике</span></div></div>
+        <div class="brand"><div class="logo-mark">С</div><div><b>СОКРАТ</b><span>школьный наставник</span></div></div>
         <div class="me-card" data-view="progress" title="Мой прогресс">
           ${ring(me.index)}
           <div><b>${esc(me.name || "Ученик")}</b><span class="muted small">${me.grade ? me.grade + " класс · " : ""}${esc(goal)}</span>
@@ -154,7 +157,7 @@ function render() {
         <div class="topics">
           ${me.spaces.length ? me.spaces.map((s) => `
             <button class="topic ${state.view === "study" && state.space?.id === s.id ? "active" : ""}" data-space="${s.id}">
-              <span class="t-name">${esc(s.topic)}</span>${s.solved ? `<span class="t-count">✓ ${s.solved}</span>` : ""}
+              <span class="t-name">${subjectIcon(s.subject)} ${esc(s.topic)}</span>${s.solved ? `<span class="t-count">✓ ${s.solved}</span>` : ""}
             </button>`).join("") : '<div class="side-empty">Тем пока нет — начни первую</div>'}
         </div>
         ${initData() ? "" : '<div class="nav" style="padding-bottom:14px"><button id="logout">↩ Выйти</button></div>'}
@@ -201,11 +204,15 @@ function renderStudy() {
       <div class="page"><div class="welcome">
         <h1>Что разберём сегодня?</h1>
         <p class="muted">Я объясню тему под твой уровень и дам задачу. Решаешь ты, а я помогаю вопросами и подсказками.</p>
+        <div class="pick subject-pick">
+          ${Object.entries(state.me.subjects).map(([k, v]) =>
+            `<button class="${k === subjectOf() ? "on" : ""}" data-subject="${k}">${v.icon} ${esc(v.name[0].toUpperCase() + v.name.slice(1))}</button>`).join("")}
+        </div>
         <div class="topic-grid">
-          ${TOPICS.map(([ico, name]) => `<button class="topic-card" data-topic="${esc(name)}"><span class="ico">${ico}</span><b>${esc(name)}</b></button>`).join("")}
+          ${state.me.subjects[subjectOf()].topics.map((name) => `<button class="topic-card" data-topic="${esc(name)}"><span class="ico">${subjectIcon(subjectOf())}</span><b>${esc(name)}</b></button>`).join("")}
         </div>
         <form class="custom-topic" id="custom-topic">
-          <input id="topic-input" placeholder="Или напиши свою тему: например, «Показательные неравенства»" maxlength="200">
+          <input id="topic-input" placeholder="Или напиши свою тему по выбранному предмету" maxlength="200">
           <button class="btn" type="submit">Начать</button>
         </form>
         <div class="how">
@@ -215,6 +222,10 @@ function renderStudy() {
         </div>
       </div></div>`;
     bindTopbar();
+    main.querySelectorAll("[data-subject]").forEach((b) => b.addEventListener("click", () => {
+      state.subject = b.dataset.subject;
+      renderStudy();
+    }));
     main.querySelectorAll("[data-topic]").forEach((b) => b.addEventListener("click", () => newTopic(b.dataset.topic)));
     document.getElementById("custom-topic").addEventListener("submit", (e) => {
       e.preventDefault();
@@ -326,7 +337,7 @@ async function act(path) {
 
 async function newTopic(topic) {
   state.space = { id: 0, topic, hints: 0, max_hints: 3, messages: [] };
-  const space = await withBusy(api("/api/spaces", "POST", { topic }));
+  const space = await withBusy(api("/api/spaces", "POST", { topic, subject: subjectOf() }));
   state.space = space;
   if (space) await refreshMe();
   render();
@@ -522,7 +533,9 @@ async function renderTeacher(classId) {
   const main = document.getElementById("main");
   let c;
   try { c = await api(`/api/classes/${classId}`); } catch (err) { toast(err.message); return; }
-  const presets = TOPICS.map(([, name]) => `<option value="${esc(name)}">`).join("");
+  const presets = Object.values(state.me.subjects).flatMap((v) => v.topics).map((name) => `<option value="${esc(name)}">`).join("");
+  const subjectOptions = Object.entries(state.me.subjects).map(([k, v]) =>
+    `<option value="${k}" ${k === subjectOf() ? "selected" : ""}>${v.icon} ${esc(v.name)}</option>`).join("");
   main.innerHTML = topbar(esc(c.name), `<button class="btn ghost" id="back-class">← Классы</button>`) + `
     <div class="page"><div class="page-inner">
       <div class="tiles">
@@ -548,6 +561,7 @@ async function renderTeacher(classId) {
       <div class="card" style="margin-top:16px"><h3>Выдать задание</h3>
         <form id="assign-form">
           <div class="custom-topic" style="margin-top:0">
+            <select id="assign-subject" aria-label="Предмет">${subjectOptions}</select>
             <input id="assign-topic" list="topic-presets" placeholder="Тема, например «Логарифмы»" maxlength="200" required>
             <datalist id="topic-presets">${presets}</datalist>
           </div>
@@ -561,7 +575,7 @@ async function renderTeacher(classId) {
 
       <div class="card" style="margin-top:16px"><h3>Задания</h3>
         ${c.assignments.length ? `<table class="table"><tr><th>Тема</th><th>Выдано</th><th class="num">Начали</th><th class="num">Решили задачу</th></tr>
-          ${c.assignments.map((a) => `<tr><td><b>${esc(a.topic)}</b>${a.note ? `<div class="muted small">${esc(a.note)}</div>` : ""}</td>
+          ${c.assignments.map((a) => `<tr><td>${subjectIcon(a.subject)} <b>${esc(a.topic)}</b>${a.note ? `<div class="muted small">${esc(a.note)}</div>` : ""}</td>
             <td class="muted">${a.created}</td><td class="num">${a.started} из ${a.total}</td><td class="num">${a.solved} из ${a.total}</td></tr>`).join("")}</table>`
           : '<p class="muted">Заданий ещё не было.</p>'}
       </div>
@@ -584,6 +598,7 @@ async function renderTeacher(classId) {
     try {
       const r = await api(`/api/classes/${classId}/assignments`, "POST", {
         topic: document.getElementById("assign-topic").value, note: document.getElementById("assign-note").value,
+        subject: document.getElementById("assign-subject").value,
       });
       toast(`Задание выдано: уведомление получили ${r.notified} из ${r.students} учеников`);
       renderTeacher(classId);
