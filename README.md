@@ -110,22 +110,15 @@
 git clone https://github.com/soloFSE/sokrat.git
 ```
 
-### 2. Положить ключи в файл `.env`
+### 2. Ключи уже в проекте
 
-Для работы нужны **токен бота MAX** и **ключ GigaChat**. Мы не храним их на GitHub, файл `.env` передаём организаторам отдельно.
-(Можно указать и свои: токен бота с [business.max.ru](https://business.max.ru), ключ GigaChat с [developers.sber.ru/studio](https://developers.sber.ru/studio).)
+Файл `.env` с **токеном бота MAX** и **ключом GigaChat** лежит в репозитории рядом с `main.py`.
+Ничего настраивать не нужно: после скачивания проект сразу готов к запуску.
 
-1. Положите полученный файл `.env` в папку проекта, рядом с `main.py` и `Dockerfile`.
-2. Если файла нет, создайте его из образца: скопируйте `.env.example` и назовите копию `.env`. Откройте её в любом текстовом редакторе и заполните две строки:
-
-```
-BOT_TOKEN=токен_бота_MAX
-GIGACHAT_AUTH_KEY=ключ_GigaChat
-```
-
-Остальные строки менять не нужно.
-
-> ⚠️ Файл `.env` содержит секретные ключи: не выкладывайте его на GitHub и не пересылайте посторонним.
+> ⚠️ Наш бот уже запущен командой и отвечает по ссылке [max.ru/ideya_fiks_198_bot](https://max.ru/ideya_fiks_198_bot).
+> Если запустить вторую копию с тем же токеном, копии будут перехватывать сообщения друг у друга.
+> Чтобы проверить бота, достаточно открыть ссылку. Для запуска своей копии можно вписать в `.env`
+> свой токен бота ([business.max.ru](https://business.max.ru)) — остальные ключи оставить как есть.
 
 ---
 
@@ -195,6 +188,22 @@ INFO:     Uvicorn running on http://0.0.0.0:8000
 | Запустить снова | `docker start sokrat` |
 | Обновить после изменений в коде | `docker rm -f sokrat`, потом снова `docker build …` и `docker run …` из шага 3 |
 | Удалить вместе с данными учеников | `docker rm -f sokrat` и `docker volume rm sokrat-data` |
+
+---
+
+## Пример запуска через командную строку (без Docker)
+
+Нужен Python 3.12. В папке проекта:
+
+```bash
+python -m venv .venv
+.venv\Scripts\activate          # Windows; на macOS/Linux: source .venv/bin/activate
+pip install -r requirements.txt
+python main.py
+```
+
+В консоли появятся строки «Бот запущен» и `Uvicorn running on http://127.0.0.1:8000`. Остановить — **Ctrl+C**.
+Тесты: `python -m pytest`.
 
 ---
 
@@ -292,7 +301,7 @@ python -m pytest
 | `Cannot connect to the Docker daemon` / ошибка про `docker_engine` | Docker Desktop не запущен. Запустите его и повторите команду |
 | `docker build` не может скачать `python:3.12-slim` (`TLS handshake timeout`, `failed to resolve`, `403`) | Docker Hub недоступен из вашей сети. В Docker Desktop: **Settings → Docker Engine**, добавьте `"registry-mirrors": ["https://mirror.gcr.io"]`, нажмите **Apply & restart** и повторите сборку |
 | `The container name "/sokrat" is already in use` | Контейнер уже существует: запустите его командой `docker start sokrat` или удалите командой `docker rm -f sokrat` и повторите `docker run` |
-| `env file .env not found` | Файла `.env` нет в папке, где вы выполняете команду. Проверьте подготовку, пункт 2 |
+| `env file .env not found` | Команда выполняется не в папке проекта. Перейдите в папку, где лежат `Dockerfile` и `.env` |
 | `pip` или `python` не найдены (PyCharm) | Python установлен без галочки «Add Python to PATH». Переустановите его с галочкой или настройте интерпретатор в PyCharm |
 | `ModuleNotFoundError: No module named …` (PyCharm) | Библиотеки не установлены в окружение проекта: проверьте `(.venv)` в терминале и повторите `pip install -r requirements.txt` |
 | Ошибка про сертификат (`SSL`, `CERTIFICATE_VERIFY_FAILED`) | В PyCharm запускайте `main.py` из папки проекта: рядом должен лежать файл `russian_trusted_ca.pem` |
